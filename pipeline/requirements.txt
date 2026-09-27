@@ -1,0 +1,22 @@
+# BHUMI Data Ingestion Pipeline Requirements
+# SIH 2026 Problem Statement 26086 | MoES / NCMRWF
+
+# Core HTTP & API Client Libraries
+requests>=2.31.0
+urllib3>=2.0.0
+tenacity>=8.2.0
+
+# Scientific & Tabular Processing
+numpy>=1.24.0
+pandas>=2.0.0
+python-dateutil>=2.8.2
+pydantic>=2.0.0
+
+# Climate & Remote Sensing Data Access (Optional / Advanced)
+# Used for NetCDF/GRIB extraction and CDS reanalysis
+cdsapi>=0.7.0
+netCDF4>=1.6.0; sys_platform != "win32" or python_version < "3.13"
+xarray>=2023.1.0
+
+# Testing
+pytest>=7.4.0

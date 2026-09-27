@@ -1,0 +1,74 @@
+name: BHUMI Weekly Historical Sync & Reconciliation
+
+on:
+  schedule:
+    # Runs every Sunday at 20:00 UTC (Monday 01:30 AM IST)
+    - cron: '0 20 * * 0'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Simulate without writing to database'
+        type: boolean
+        default: false
+      start_year:
+        description: 'Historical start year (default 2014 for 12-season archive)'
+        type: string
+        default: '2014'
+      end_year:
+        description: 'Historical end year'
+        type: string
+        default: '2025'
+      sample_only:
+        description: 'Run on small representative sample only'
+        type: boolean
+        default: false
+
+concurrency:
+  group: bhumi-weekly-sync
+  cancel-in-progress: false
+
+jobs:
+  weekly_sync:
+    name: Execute Historical Sync & Reconciliation
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install Pipeline Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r pipeline/requirements.txt
+
+      - name: Run Pipeline Integrity Tests
+        run: |
+          python -m unittest discover tests
+
+      - name: Execute Weekly Synchronization
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          CDSAPI_URL: ${{ secrets.CDSAPI_URL }}
+          CDSAPI_KEY: ${{ secrets.CDSAPI_KEY }}
+          EARTHDATA_USERNAME: ${{ secrets.EARTHDATA_USERNAME }}
+          EARTHDATA_PASSWORD: ${{ secrets.EARTHDATA_PASSWORD }}
+        run: |
+          EXTRA_ARGS=""
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            EXTRA_ARGS="$EXTRA_ARGS --dry-run"
+          fi
+          if [ "${{ inputs.sample_only }}" = "true" ]; then
+            EXTRA_ARGS="$EXTRA_ARGS --sample-only"
+          fi
+          START_YR="${{ inputs.start_year || '2014' }}"
+          END_YR="${{ inputs.end_year || '2025' }}"
+          
+          python -m pipeline.jobs.weekly_sync --start-year "$START_YR" --end-year "$END_YR" --reconcile $EXTRA_ARGS
