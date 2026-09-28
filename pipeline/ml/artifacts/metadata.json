@@ -132,8 +132,9 @@
         "count": 8
       }
     ],
-    "roc_auc_macro": NaN,
+    "roc_auc_macro": null,
     "roc_auc_per_class": {
+
       "auc_active": 0.56,
       "auc_break": 0.4267
     },

@@ -6,7 +6,7 @@
  */
 
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
-import { getServerEnv } from '@/lib/env';
+import { getServerEnv } from '../env';
 import type { Database } from './types';
 
 export function getSupabaseServerClient(useServiceRole = false): SupabaseClient<Database> | null {

@@ -6,18 +6,34 @@ import { Navbar } from '@/components/layout/Navbar';
 import { Footer } from '@/components/layout/Footer';
 import { SystemStatusBanner } from '@/components/common/SystemStatusBanner';
 import { OverviewStats } from '@/components/dashboard/OverviewStats';
-import { MapContainerPlaceholder } from '@/components/map/MapContainerPlaceholder';
-import { RiskLegend } from '@/components/dashboard/RiskLegend';
-import { ExplainabilityPreview } from '@/components/dashboard/ExplainabilityPreview';
-import { AdvisoryShell } from '@/components/advisory/AdvisoryShell';
+import { BhumiDashboardClient } from '@/components/dashboard/BhumiDashboardClient';
 import { ArchitectureOverview } from '@/components/dashboard/ArchitectureOverview';
 import { buttonVariants } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
 import { ArrowRight, Compass, ShieldCheck } from 'lucide-react';
+import {
+  getBlocks,
+  getLivePredictions,
+  getModelMetadata,
+  getRecentTeleconnections,
+  buildBlockGeoJSON,
+} from '@/lib/data';
 
-export default function HomePage() {
+export const revalidate = 60;
+
+export default async function HomePage() {
   const isConfigured = isSupabaseConfigured();
+
+  // Fetch precomputed data server-side
+  const [blocks, predictions, modelMetadata, teleconnections] = await Promise.all([
+    getBlocks(),
+    getLivePredictions(),
+    getModelMetadata(),
+    getRecentTeleconnections(14),
+  ]);
+
+  const blockGeoJSON = buildBlockGeoJSON(blocks, predictions);
 
   return (
     <div className="min-h-screen flex flex-col bg-background text-foreground">
@@ -72,16 +88,15 @@ export default function HomePage() {
           <OverviewStats />
         </section>
 
-        {/* Map-based visualization container */}
-        <section aria-label="Map Canvas" className="space-y-3">
-          <MapContainerPlaceholder />
-          <RiskLegend />
-        </section>
-
-        {/* Domain components: Explainability and Advisory engines */}
-        <section className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <ExplainabilityPreview />
-          <AdvisoryShell />
+        {/* Full Interactive Dashboard (Map, Forecast, Panchayat, Explainability) */}
+        <section aria-label="Dashboard Experience">
+          <BhumiDashboardClient
+            initialBlocks={blocks}
+            initialPredictions={predictions}
+            initialGeoJSON={blockGeoJSON}
+            modelMetadata={modelMetadata}
+            teleconnections={teleconnections}
+          />
         </section>
 
         {/* Production architecture breakdown */}
@@ -94,3 +109,4 @@ export default function HomePage() {
     </div>
   );
 }
+
