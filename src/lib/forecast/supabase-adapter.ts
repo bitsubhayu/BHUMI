@@ -32,24 +32,88 @@ import { getPublicEnv } from '../env.ts';
 import { resolveBlockGeometry } from '../geo.ts';
 import { evaluateAdvisoryRule, normalizeCropType } from '../advisory/engine.ts';
 import { VERIFIED_ADVISORY_RULES } from '../advisory/rules.ts';
-import { AUTHORITATIVE_MODEL_METADATA } from '../metadata.ts';
+import { type ModelMetadata, FALLBACK_MODEL_METADATA, parseModelMetadata } from '../metadata.ts';
+
+export const ALL_STEP6_LOCALES: Locale[] = [
+  'en',
+  'hi',
+  'mr',
+  'te',
+  'ta',
+  'bn',
+  'gu',
+  'kn',
+  'pa',
+  'or',
+];
 
 // In-memory cache
 let cachedBlocks: BlockRow[] | null = null;
 let cachedPredictions: LivePredictionRow[] | null = null;
 let cachedRules: AdvisoryRuleRow[] | null = null;
+let cachedMetadata: ModelMetadata | null = null;
 let lastFetchTime = 0;
+let lastMetaFetch = 0;
 const CACHE_TTL_MS = 60_000; // 1 minute
 
 export function clearSupabaseAdapterCache(): void {
   cachedBlocks = null;
   cachedPredictions = null;
   cachedRules = null;
+  cachedMetadata = null;
   lastFetchTime = 0;
+  lastMetaFetch = 0;
 }
 
-// Authoritative model metadata
-const authorMeta = AUTHORITATIVE_MODEL_METADATA;
+/**
+ * Loads authoritative model readiness metadata.
+ * - Browser: fetches from existing server endpoint /api/readiness (never reads filesystem directly).
+ * - Server/Node: reads pipeline/ml/artifacts/metadata.json via dynamic import (keeps fs server-only).
+ * - Preserves legitimate zero values, reasons, and never invents fallback counts.
+ */
+export async function fetchAuthoritativeMetadata(): Promise<ModelMetadata> {
+  const now = Date.now();
+  if (cachedMetadata && now - lastMetaFetch < CACHE_TTL_MS) {
+    return cachedMetadata;
+  }
+
+  // 1. Browser environment: use existing server data path (/api/readiness)
+  if (typeof window !== 'undefined') {
+    try {
+      const res = await fetch('/api/readiness');
+      if (res.ok) {
+        const json = await res.json();
+        if (json.success && json.metadata) {
+          cachedMetadata = json.metadata as ModelMetadata;
+          lastMetaFetch = now;
+          return cachedMetadata;
+        }
+      }
+    } catch (err) {
+      console.warn('[BHUMI Supabase Adapter] Could not fetch /api/readiness in browser:', err);
+    }
+  } else {
+    // 2. Server-side or Node test environment: read pipeline/ml/artifacts/metadata.json
+    try {
+      const importDynamic = new Function('moduleName', 'return import(moduleName)');
+      const fs = (await importDynamic('node:fs')) as typeof import('node:fs');
+      const path = (await importDynamic('node:path')) as typeof import('node:path');
+      const metaPath = path.join(process.cwd(), 'pipeline', 'ml', 'artifacts', 'metadata.json');
+      if (fs.existsSync(metaPath)) {
+        const content = await fs.promises.readFile(metaPath, 'utf8');
+        const sanitized = content.replace(/:\s*NaN\b/g, ': null');
+        const parsed = JSON.parse(sanitized);
+        cachedMetadata = parseModelMetadata(parsed);
+        lastMetaFetch = now;
+        return cachedMetadata;
+      }
+    } catch {
+      // In environment where fs is unavailable
+    }
+  }
+
+  return FALLBACK_MODEL_METADATA;
+}
 
 async function fetchPostgrest<T>(path: string): Promise<T[]> {
   const { supabaseUrl, supabaseAnonKey, isConfigured } = getPublicEnv();
@@ -204,6 +268,17 @@ function actionToVerdict(action: AgronomicActionType | null | undefined): Verdic
   }
 }
 
+function buildDriverLocaleMap(
+  enText: string,
+  localized: Partial<Record<Locale, string>> = {}
+): Record<Locale, string> {
+  const result: Partial<Record<Locale, string>> = {};
+  for (const loc of ALL_STEP6_LOCALES) {
+    result[loc] = localized[loc] || enText;
+  }
+  return result as Record<Locale, string>;
+}
+
 function buildDriversForHazard(
   pred: LivePredictionRow | undefined,
   hazard: Hazard
@@ -222,11 +297,7 @@ function buildDriversForHazard(
     const raw = pred.primary_driver;
     drivers.push({
       key: 'primary_driver',
-      labelByLocale: {
-        en: raw,
-        hi: raw,
-        bn: raw,
-      },
+      labelByLocale: buildDriverLocaleMap(raw),
       effect: prob >= 50 ? 'raises' : 'lowers',
       strength: Math.min(1, Math.max(0.2, (pred.calibrated_confidence || 75) / 100)),
     });
@@ -236,11 +307,7 @@ function buildDriversForHazard(
     const rawSec = pred.secondary_driver;
     drivers.push({
       key: 'secondary_driver',
-      labelByLocale: {
-        en: rawSec,
-        hi: rawSec,
-        bn: rawSec,
-      },
+      labelByLocale: buildDriverLocaleMap(rawSec),
       effect: prob >= 40 ? 'raises' : 'lowers',
       strength: 0.65,
     });
@@ -250,11 +317,20 @@ function buildDriversForHazard(
     const yr = pred.teleconnection_analog_year;
     drivers.push({
       key: 'analog_year',
-      labelByLocale: {
-        en: `Historical analog match to ${yr} monsoon pattern`,
-        hi: `${yr} मानसून पैटर्न से ऐतिहासिक अनुरूपता`,
-        bn: `${yr} মৌসুমী বায়ু ধরনের ঐতিহাসিক অনুরূপতা`,
-      },
+      labelByLocale: buildDriverLocaleMap(
+        `Historical analog match to ${yr} monsoon pattern`,
+        {
+          hi: `${yr} मानसून पैटर्न से ऐतिहासिक अनुरूपता`,
+          bn: `${yr} মৌসুমী বায়ু ধরনের ঐতিহাসিক অনুরূপता`,
+          mr: `${yr} मान्सून पॅटर्नशी ऐतिहासिक साम्य`,
+          te: `${yr} రుతుపవన నమూనాకు చారిత్రక సారూప్యత`,
+          ta: `${yr} பருவமழை அமைப்புடன் வரலாற்று ஒப்புமை`,
+          gu: `${yr} ચોમાસાની પેટર્ન સાથે ઐતિહાસિક સમાનતા`,
+          kn: `${yr} ಮುಂಗಾರು ಮಾದರಿಗೆ ಐತಿಹಾಸಿಕ ಹೋಲಿಕೆ`,
+          pa: `${yr} ਮੌਨਸੂਨ ਪੈਟਰਨ ਨਾਲ ਇਤਿਹਾਸਕ ਸਮਾਨਤਾ`,
+          or: `${yr} ମୌସୁମୀ ପ୍ୟାଟର୍ଣ୍ଣ ସହିତ ଐତିହାସିକ ସମାନତା`,
+        }
+      ),
       effect: 'raises',
       strength: 0.5,
     });
@@ -267,6 +343,7 @@ export const supabaseRepository: ForecastRepository = {
   async getMeta(): Promise<ForecastMeta> {
     const preds = await getCachedPredictions();
     const latestPred = preds[0];
+    const authorMeta = await fetchAuthoritativeMetadata();
 
     const now = new Date();
     let validFromStr = now.toISOString();
@@ -477,18 +554,6 @@ export const supabaseRepository: ForecastRepository = {
     const blocks = await getCachedBlocks();
     const predictions = await getCachedPredictions();
 
-    let targetBlocks = blocks;
-    if (parentId) {
-      if (matchesState(parentId, parentId)) {
-        const filtered = blocks.filter((b) => matchesState(parentId, b.state_name));
-        if (filtered.length > 0) targetBlocks = filtered;
-      }
-      const distFiltered = blocks.filter((b) =>
-        matchesDistrict(parentId, b.state_name, b.district_name)
-      );
-      if (distFiltered.length > 0) targetBlocks = distFiltered;
-    }
-
     // Organize predictions by block_id and lead_time_bucket
     const predMap = new Map<string, Map<LeadTimeBucket, LivePredictionRow>>();
     for (const p of predictions) {
@@ -498,6 +563,141 @@ export const supabaseRepository: ForecastRepository = {
       const bMap = predMap.get(p.block_id)!;
       if (!bMap.has(p.lead_time_bucket)) {
         bMap.set(p.lead_time_bucket, p);
+      }
+    }
+
+    // 1. National / Root View (parentId === null):
+    // Do NOT load all ~6,700 block geometries on initial page load.
+    // Return higher-level summaries at district level derivable from existing blocks table without fabricating geometry.
+    if (!parentId) {
+      const distMap = new Map<string, BlockRow[]>();
+      for (const b of blocks) {
+        const key = `district:${b.state_name}:${b.district_name}`;
+        if (!distMap.has(key)) {
+          distMap.set(key, []);
+        }
+        distMap.get(key)!.push(b);
+      }
+
+      const features: RegionFeature[] = [];
+      for (const [distId, dBlocks] of distMap.entries()) {
+        const first = dBlocks[0];
+        const avgLon = dBlocks.reduce((sum, b) => sum + b.centroid_lon, 0) / dBlocks.length;
+        const avgLat = dBlocks.reduce((sum, b) => sum + b.centroid_lat, 0) / dBlocks.length;
+
+        // Aggregate actual predictions across blocks in this district
+        let sumOnsetW1 = 0, sumOnsetW2 = 0, sumOnsetW3 = 0, sumOnsetW4 = 0;
+        let sumDryW1 = 0, sumDryW2 = 0, sumDryW3 = 0, sumDryW4 = 0;
+        let sumHeavyW1 = 0, sumHeavyW2 = 0, sumHeavyW3 = 0, sumHeavyW4 = 0;
+        let sumConf = 0;
+        let countPred = 0;
+        let isExp = false;
+        let primaryDriver: string | null = null;
+        let analogYear: number | null = null;
+
+        for (const b of dBlocks) {
+          const bPreds = predMap.get(b.block_id);
+          const w1 = bPreds?.get('week_1');
+          const w2 = bPreds?.get('week_2');
+          const w3 = bPreds?.get('week_3');
+          const w4 = bPreds?.get('week_4');
+
+          if (w1) {
+            sumOnsetW1 += w1.onset_probability;
+            sumDryW1 += w1.break_probability;
+            sumHeavyW1 += w1.heavy_spell_probability;
+            sumConf += w1.calibrated_confidence;
+            countPred++;
+            if (!primaryDriver && w1.primary_driver) primaryDriver = w1.primary_driver;
+            if (!analogYear && w1.teleconnection_analog_year) analogYear = w1.teleconnection_analog_year;
+            if (
+              w1.primary_driver?.includes('[EXPERIMENTAL]') ||
+              w1.advisory_code?.startsWith('exp_')
+            ) {
+              isExp = true;
+            }
+          }
+          if (w2) {
+            sumOnsetW2 += w2.onset_probability;
+            sumDryW2 += w2.break_probability;
+            sumHeavyW2 += w2.heavy_spell_probability;
+          }
+          if (w3) {
+            sumOnsetW3 += w3.onset_probability;
+            sumDryW3 += w3.break_probability;
+            sumHeavyW3 += w3.heavy_spell_probability;
+          }
+          if (w4) {
+            sumOnsetW4 += w4.onset_probability;
+            sumDryW4 += w4.break_probability;
+            sumHeavyW4 += w4.heavy_spell_probability;
+          }
+        }
+
+        const denom = countPred > 0 ? countPred : 1;
+
+        features.push({
+          type: 'Feature',
+          geometry: {
+            type: 'Point',
+            coordinates: [avgLon, avgLat],
+          },
+          properties: {
+            id: distId,
+            name: first.district_name,
+            district: first.district_name,
+            state: first.state_name,
+            level: 'district',
+            block_count: dBlocks.length,
+            onset_w1: countPred > 0 ? Math.round(sumOnsetW1 / denom) : 0,
+            onset_w2: countPred > 0 ? Math.round(sumOnsetW2 / denom) : 0,
+            onset_w3: countPred > 0 ? Math.round(sumOnsetW3 / denom) : 0,
+            onset_w4: countPred > 0 ? Math.round(sumOnsetW4 / denom) : 0,
+            dry_spell_w1: countPred > 0 ? Math.round(sumDryW1 / denom) : 0,
+            dry_spell_w2: countPred > 0 ? Math.round(sumDryW2 / denom) : 0,
+            dry_spell_w3: countPred > 0 ? Math.round(sumDryW3 / denom) : 0,
+            dry_spell_w4: countPred > 0 ? Math.round(sumDryW4 / denom) : 0,
+            heavy_rain_w1: countPred > 0 ? Math.round(sumHeavyW1 / denom) : 0,
+            heavy_rain_w2: countPred > 0 ? Math.round(sumHeavyW2 / denom) : 0,
+            heavy_rain_w3: countPred > 0 ? Math.round(sumHeavyW3 / denom) : 0,
+            heavy_rain_w4: countPred > 0 ? Math.round(sumHeavyW4 / denom) : 0,
+            confidence: countPred > 0 ? Math.round(sumConf / denom) : null,
+            primary_driver: primaryDriver,
+            analog_year: analogYear,
+            is_experimental: isExp,
+            representation: 'centroid',
+            is_centroid_fallback: true,
+          },
+        });
+      }
+
+      return {
+        type: 'FeatureCollection',
+        features,
+      };
+    }
+
+    // 2. Specific Region Selected (district, state, or block)
+    let targetBlocks: BlockRow[] = [];
+    const distFiltered = blocks.filter((b) =>
+      matchesDistrict(parentId, b.state_name, b.district_name)
+    );
+    if (distFiltered.length > 0) {
+      targetBlocks = distFiltered;
+    } else {
+      const stateFiltered = blocks.filter((b) => matchesState(parentId, b.state_name));
+      if (stateFiltered.length > 0) {
+        targetBlocks = stateFiltered;
+      } else {
+        const blockMatch = blocks.filter((b) => b.block_id === parentId);
+        if (blockMatch.length > 0) {
+          const bMatch = blockMatch[0];
+          targetBlocks = blocks.filter(
+            (b) => b.state_name === bMatch.state_name && b.district_name === bMatch.district_name
+          );
+        } else {
+          targetBlocks = [];
+        }
       }
     }
 
@@ -517,6 +717,7 @@ export const supabaseRepository: ForecastRepository = {
         name: block.block_name,
         district: block.district_name,
         state: block.state_name,
+        level: 'block',
         elevation_m: block.elevation_m,
         slope_deg: block.slope_deg,
         distance_to_coast_km: block.distance_to_coast_km,
@@ -624,6 +825,7 @@ export const supabaseRepository: ForecastRepository = {
   async getAdvisory(regionId: string, crop: Crop, week: LeadWeek): Promise<Advisory> {
     const predictions = await getCachedPredictions();
     const rules = await getCachedRules();
+    const authorMeta = await fetchAuthoritativeMetadata();
 
     const targetBucket: LeadTimeBucket = `week_${week}`;
     const blockPreds = predictions.filter((p) => p.block_id === regionId);
@@ -631,12 +833,20 @@ export const supabaseRepository: ForecastRepository = {
       blockPreds.find((p) => p.lead_time_bucket === targetBucket) ??
       blockPreds[0];
 
-    const locales: Locale[] = ['en', 'hi', 'bn'];
-    const textByLocale: Record<Locale, string> = {
+    const defaultUnavailableTexts: Record<Locale, string> = {
       en: 'No verified advisory rule is available for this forecast.',
       hi: 'इस पूर्वानुमान के लिए कोई सत्यापित सलाह उपलब्ध नहीं है।',
+      mr: 'या अंदाजासाठी कोणताही पडताळलेला सल्ला उपलब्ध नाही.',
+      te: 'ఈ సూచన కోసం ధృవీకరించబడిన సలహా ఏదీ అందుబాటులో లేదు.',
+      ta: 'இந்த முன்னறிவிப்புக்கு சரிபார்க்கப்பட்ட ஆலோசனை எதுவும் கிடைக்கவில்லை.',
       bn: 'এই পূর্বাভাসের জন্য কোনও যাচাইকৃত পরামর্শ উপলব্ধ নেই।',
+      gu: 'આ આગાહી માટે કોઈ ચકાસાયેલ સલાહ ઉપલબ્ધ નથી.',
+      kn: 'ಈ ಮುನ್ಸೂಚನೆಗೆ ಯಾವುದೇ ಪರಿಶೀಲಿಸಿದ ಸಲಹೆ ಲಭ್ಯವಿಲ್ಲ.',
+      pa: 'ਇਸ ਭਵਿੱਖਬਾਣੀ ਲਈ ਕੋਈ ਪ੍ਰਮਾਣਿਤ ਸਲਾਹ ਉਪਲਬਧ ਨਹੀਂ ਹੈ।',
+      or: 'ଏହି ପୂର୍ବାନୁମାନ ପାଇଁ କୌଣସି ଯାଞ୍ଚ ହୋଇଥିବା ପରାମର୍ଶ ଉପଲବ୍ଧ ନାହିଁ |',
     };
+
+    const textByLocale: Record<Locale, string> = { ...defaultUnavailableTexts };
 
     let verdict: Verdict = 'wait';
 
@@ -651,7 +861,7 @@ export const supabaseRepository: ForecastRepository = {
       verdict = actionToVerdict(evalEn.actionType);
       textByLocale.en = evalEn.recommendation;
 
-      for (const loc of locales) {
+      for (const loc of ALL_STEP6_LOCALES) {
         if (loc === 'en') continue;
         const ev = evaluateAdvisoryRule(pred, {
           rules,

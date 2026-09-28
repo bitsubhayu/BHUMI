@@ -65,6 +65,8 @@ export function BhumiMapDashboard() {
   const activeWeek = parseWeek(searchParams.get('week'));
   const activeCrop = parseCrop(searchParams.get('crop'));
   const selectedBlockId = searchParams.get('block');
+  const selectedDistrict = searchParams.get('district');
+  const selectedState = searchParams.get('state');
 
   const [geoJSON, setGeoJSON] = useState<GeoJSON.FeatureCollection | null>(null);
   const [risk, setRisk] = useState<RegionRisk | null>(null);
@@ -74,12 +76,22 @@ export function BhumiMapDashboard() {
   const [selectedCentroid, setSelectedCentroid] = useState<[number, number] | null>(null);
   const [loading, setLoading] = useState(false);
 
-  // Load GeoJSON on mount
+  // Load Meta on mount
   useEffect(() => {
-    repo.getRegionsGeoJSON(null).then(setGeoJSON);
     repo.getMeta().then(setMeta);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Load GeoJSON dynamically: district summaries for national view, authentic blocks when district/block selected
+  useEffect(() => {
+    let active = true;
+    const parentQuery = selectedDistrict || selectedBlockId || selectedState || null;
+    repo.getRegionsGeoJSON(parentQuery).then((data) => {
+      if (active) setGeoJSON(data);
+    });
+    return () => { active = false; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedDistrict, selectedBlockId, selectedState]);
 
   // Load risk + advisory when block / week / crop changes
   useEffect(() => {
@@ -100,6 +112,9 @@ export function BhumiMapDashboard() {
       setRisk(r);
       setAdvisory(a);
       setRegion(regions[0] ?? null);
+      if (regions[0]?.centroid) {
+        setSelectedCentroid(regions[0].centroid);
+      }
     }).finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -109,7 +124,12 @@ export function BhumiMapDashboard() {
     setSelectedCentroid(centroid);
     startTransition(() => {
       const params = new URLSearchParams(searchParams.toString());
-      params.set('block', id);
+      if (id.startsWith('district:')) {
+        params.set('district', id);
+        params.delete('block');
+      } else {
+        params.set('block', id);
+      }
       router.replace(`?${params.toString()}`, { scroll: false });
     });
   }, [searchParams, router]);

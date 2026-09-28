@@ -39,12 +39,12 @@ async function verifyLiveIntegration() {
   const blocks = await supabaseRepository.listRegions('Jodhpur');
   console.log('Blocks found:', blocks.map((b) => ({ id: b.id, name: b.name, centroid: b.centroid })));
 
-  console.log('\n=== 5. Testing getRegionsGeoJSON(null) ===');
-  const geo = await supabaseRepository.getRegionsGeoJSON(null);
-  console.log('GeoJSON feature count:', geo.features.length);
-  for (const f of geo.features) {
+  console.log('\n=== 5. Testing getRegionsGeoJSON(null) [National District Summaries] ===');
+  const nationalGeo = await supabaseRepository.getRegionsGeoJSON(null);
+  console.log('National GeoJSON district feature count:', nationalGeo.features.length);
+  for (const f of nationalGeo.features) {
     console.log(
-      ' - Feature:',
+      ' - District Feature:',
       f.properties.id,
       f.properties.name,
       '| Geom:',
@@ -61,6 +61,23 @@ async function verifyLiveIntegration() {
     );
   }
 
+  console.log('\n=== 5b. Testing getRegionsGeoJSON("Jodhpur") [Authentic District Blocks] ===');
+  const jodhpurGeo = await supabaseRepository.getRegionsGeoJSON('Jodhpur');
+  console.log('Jodhpur authentic block count:', jodhpurGeo.features.length);
+  for (const f of jodhpurGeo.features) {
+    console.log(
+      ' - Block Feature:',
+      f.properties.id,
+      f.properties.name,
+      '| Geom:',
+      f.geometry.type,
+      '| Rep:',
+      f.properties.representation,
+      '| is_centroid_fallback:',
+      f.properties.is_centroid_fallback
+    );
+  }
+
   console.log('\n=== 6. Testing getRisk("IND_RJ_JOD_001") ===');
   const risk = await supabaseRepository.getRisk('IND_RJ_JOD_001');
   console.log('Risk for Jodhpur block 1:');
@@ -71,13 +88,20 @@ async function verifyLiveIntegration() {
     console.log('  sample driver:', risk.drivers.dry_spell[0]);
   }
 
-  console.log('\n=== 7. Testing getAdvisory("IND_RJ_JOD_001", "rice", 1) ===');
+  console.log('\n=== 7. Testing getAdvisory("IND_RJ_JOD_001", "rice", 1) Across All 10 Locales ===');
   const adv1 = await supabaseRepository.getAdvisory('IND_RJ_JOD_001', 'rice', 1);
   console.log('Advisory Week 1:');
   console.log('  verdict:', adv1.verdict);
   console.log('  en:', adv1.textByLocale.en);
   console.log('  hi:', adv1.textByLocale.hi);
   console.log('  bn:', adv1.textByLocale.bn);
+  console.log('  mr:', adv1.textByLocale.mr);
+  console.log('  te:', adv1.textByLocale.te);
+  console.log('  ta:', adv1.textByLocale.ta);
+  console.log('  gu:', adv1.textByLocale.gu);
+  console.log('  kn:', adv1.textByLocale.kn);
+  console.log('  pa:', adv1.textByLocale.pa);
+  console.log('  or:', adv1.textByLocale.or);
 
   console.log('\n=== 8. Testing getAdvisory("IND_RJ_JOD_001", "cotton", 2) ===');
   const adv2 = await supabaseRepository.getAdvisory('IND_RJ_JOD_001', 'cotton', 2);
@@ -85,8 +109,9 @@ async function verifyLiveIntegration() {
   console.log('  verdict:', adv2.verdict);
   console.log('  en:', adv2.textByLocale.en);
 
-  console.log('\n=== 9. Testing experimental block IND_MH_PUN_001 ===');
-  const expGeo = geo.features.find((f) => f.properties.id === 'IND_MH_PUN_001');
+  console.log('\n=== 9. Testing experimental block IND_MH_PUN_001 in Pune GeoJSON ===');
+  const puneGeo = await supabaseRepository.getRegionsGeoJSON('district:Maharashtra:Pune');
+  const expGeo = puneGeo.features.find((f) => f.properties.id === 'IND_MH_PUN_001');
   console.log('Haveli is_experimental flag:', expGeo?.properties.is_experimental);
 
   console.log('\n=== 10. Testing missing block safe fallback ===');

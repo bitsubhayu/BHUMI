@@ -8,7 +8,17 @@ import type { GeoJSON } from 'geojson';
 
 export type Hazard = 'onset' | 'dry_spell' | 'heavy_rain';
 export type LeadWeek = 1 | 2 | 3 | 4;
-export type Locale = 'en' | 'hi' | 'bn';
+export type Locale =
+  | 'en'
+  | 'hi'
+  | 'mr'
+  | 'te'
+  | 'ta'
+  | 'bn'
+  | 'gu'
+  | 'kn'
+  | 'pa'
+  | 'or';
 export type Band = 'low' | 'moderate' | 'high' | 'very_high';
 export type Verdict =
   | 'sow_now'

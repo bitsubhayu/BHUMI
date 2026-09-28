@@ -34,6 +34,42 @@ import { resolveBlockGeometry } from '../../src/lib/geo.ts';
 import { evaluateAdvisoryRule, normalizeCropType } from '../../src/lib/advisory/engine.ts';
 import { VERIFIED_ADVISORY_RULES } from '../../src/lib/advisory/rules.ts';
 
+// Ensure public env is configured for deterministic testing
+if (!process.env.NEXT_PUBLIC_SUPABASE_URL) {
+  process.env.NEXT_PUBLIC_SUPABASE_URL = 'https://mock.supabase.co';
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = 'mock-anon-key';
+}
+
+const originalFetch = globalThis.fetch;
+globalThis.fetch = async (input, init) => {
+  const url = String(input);
+  if (url.includes('/rest/v1/blocks')) {
+    return {
+      ok: true,
+      status: 200,
+      json: async () => SAMPLE_BLOCKS,
+    };
+  }
+  if (url.includes('/rest/v1/live_predictions')) {
+    return {
+      ok: true,
+      status: 200,
+      json: async () => SAMPLE_PREDICTIONS,
+    };
+  }
+  if (url.includes('/rest/v1/advisory_rules')) {
+    return {
+      ok: true,
+      status: 200,
+      json: async () => VERIFIED_ADVISORY_RULES,
+    };
+  }
+  if (originalFetch) {
+    return originalFetch(input, init);
+  }
+  return { ok: false, status: 500, json: async () => [] };
+};
+
 // Sample real backend rows matching public.blocks and public.live_predictions
 const SAMPLE_BLOCKS = [
   {
@@ -365,21 +401,51 @@ describe('6. Advisory Delegation to Step 6 Rule Engine & Multilingual Templates'
     assert.ok(evalRes.recommendation.includes('Monsoon probability indices'));
   });
 
-  test('generates localized texts for all 3 supported UI locales (en, hi, bn)', () => {
-    const pred = SAMPLE_PREDICTIONS[0];
-    const enRes = evaluateAdvisoryRule(pred, { rules: VERIFIED_ADVISORY_RULES, cropCategory: 'paddy', langCode: 'en' });
-    const hiRes = evaluateAdvisoryRule(pred, { rules: VERIFIED_ADVISORY_RULES, cropCategory: 'paddy', langCode: 'hi' });
-    const bnRes = evaluateAdvisoryRule(pred, { rules: VERIFIED_ADVISORY_RULES, cropCategory: 'paddy', langCode: 'bn' });
+  test('preserves and returns all 10 accepted Step 6 advisory locales', async () => {
+    const ALL_10_LOCALES = ['en', 'hi', 'mr', 'te', 'ta', 'bn', 'gu', 'kn', 'pa', 'or'];
+    const adv = await supabaseRepository.getAdvisory('IND_RJ_JOD_001', 'rice', 1);
 
-    assert.equal(enRes.isEnglishFallback, false);
-    assert.equal(hiRes.isEnglishFallback, false);
-    assert.equal(bnRes.isEnglishFallback, false);
-    assert.ok(hiRes.recommendation.length > 10);
-    assert.ok(bnRes.recommendation.length > 10);
+    assert.ok(adv.verdict);
+    for (const loc of ALL_10_LOCALES) {
+      assert.ok(adv.textByLocale[loc], `Missing advisory text for locale ${loc}`);
+      assert.ok(
+        adv.textByLocale[loc].length > 10,
+        `Advisory text for locale ${loc} must be non-empty`
+      );
+    }
+  });
+
+  test('missing translation in localized template cleanly falls back to English', () => {
+    const dummyRule = {
+      rule_code: 'TEST-FALLBACK-01',
+      action_type: 'monitor_conditions',
+      crop_category: 'general',
+      trigger_condition: 'break_probability >= 0',
+      english_title: 'English Title',
+      english_recommendation: 'English recommendation text fallback.',
+      suggested_measures: ['Measure 1'],
+      icar_reference_code: null,
+      localized_templates: {
+        hi: { recommendation: 'हिंदी सलाह' },
+        // mr, te, ta, bn, etc. omitted intentionally
+      },
+      is_active: true,
+      created_at: '2026-09-28T00:00:00Z',
+      updated_at: '2026-09-28T00:00:00Z',
+    };
+
+    const res = evaluateAdvisoryRule(SAMPLE_PREDICTIONS[0], {
+      rules: [dummyRule],
+      cropCategory: 'general',
+      langCode: 'mr', // omitted from localized_templates
+    });
+
+    assert.equal(res.isEnglishFallback, true);
+    assert.equal(res.recommendation, 'English recommendation text fallback.');
   });
 });
 
-describe('7. Experimental Model Provenance Preservation', () => {
+describe('7. Experimental Model Provenance & Authoritative Metadata', () => {
   test('flags prediction as experimental when primary driver contains [EXPERIMENTAL]', () => {
     const expPred = SAMPLE_PREDICTIONS[4];
     const evalRes = evaluateAdvisoryRule(expPred, {
@@ -393,7 +459,7 @@ describe('7. Experimental Model Provenance Preservation', () => {
     assert.ok(evalRes.experimentalWarning !== null);
   });
 
-  test('ForecastMeta preserves model readiness and training coverage metadata', async () => {
+  test('ForecastMeta preserves model readiness and training coverage metadata from source', async () => {
     const meta = await supabaseRepository.getMeta();
     assert.ok(meta.issuedAt);
     assert.ok(meta.validFrom);
@@ -402,6 +468,42 @@ describe('7. Experimental Model Provenance Preservation', () => {
     assert.equal(meta.isProductionReady, false);
     assert.ok(meta.trainingCoverage);
     assert.equal(meta.trainingCoverage.seasonsCount, 1);
+  });
+
+  test('deterministic test: modifying source metadata.json updates exposed ModelMetadata without modifying TypeScript constants', async () => {
+    const metaPath = path.resolve(process.cwd(), 'pipeline/ml/artifacts/metadata.json');
+    const originalContent = fs.readFileSync(metaPath, 'utf8');
+
+    try {
+      const parsed = JSON.parse(originalContent);
+      // Mutate training coverage count in source artifact
+      parsed.training_coverage.blocks_count = 8888;
+      parsed.training_coverage.samples_generated = 99999;
+      fs.writeFileSync(metaPath, JSON.stringify(parsed, null, 2));
+
+      clearSupabaseAdapterCache();
+      const updatedMeta = await supabaseRepository.getMeta();
+
+      assert.equal(
+        updatedMeta.trainingCoverage.blocksCount,
+        8888,
+        'Exposed ModelMetadata must reflect changes to source metadata.json'
+      );
+      assert.equal(
+        updatedMeta.trainingCoverage.samplesGenerated,
+        99999,
+        'Exposed ModelMetadata must reflect changes to source metadata.json'
+      );
+    } finally {
+      // Restore original file
+      fs.writeFileSync(metaPath, originalContent);
+      clearSupabaseAdapterCache();
+    }
+
+    // Verify restoration
+    const restoredMeta = await supabaseRepository.getMeta();
+    assert.equal(restoredMeta.trainingCoverage.blocksCount, 2);
+    assert.equal(restoredMeta.trainingCoverage.samplesGenerated, 96);
   });
 });
 
@@ -446,6 +548,15 @@ describe('9. Mock Mode vs Supabase Mode Integrity', () => {
     const advisory = await mockRepository.getAdvisory('block-0-0-0', 'rice', 1);
     assert.ok(advisory.verdict);
     assert.ok(advisory.textByLocale.en);
+    assert.ok(advisory.textByLocale.hi);
+    assert.ok(advisory.textByLocale.mr);
+    assert.ok(advisory.textByLocale.te);
+    assert.ok(advisory.textByLocale.ta);
+    assert.ok(advisory.textByLocale.bn);
+    assert.ok(advisory.textByLocale.gu);
+    assert.ok(advisory.textByLocale.kn);
+    assert.ok(advisory.textByLocale.pa);
+    assert.ok(advisory.textByLocale.or);
   });
 
   test('getRepository() respects NEXT_PUBLIC_USE_MOCK_DATA flag', () => {
@@ -460,5 +571,42 @@ describe('9. Mock Mode vs Supabase Mode Integrity', () => {
     assert.equal(realRepo, supabaseRepository);
 
     process.env.NEXT_PUBLIC_USE_MOCK_DATA = originalEnv;
+  });
+});
+
+describe('10. Map Data Loading & Performance Contract', () => {
+  test('initial map data getRegionsGeoJSON(null) returns district summaries without loading full block geometries', async () => {
+    const geo = await supabaseRepository.getRegionsGeoJSON(null);
+    assert.ok(geo.features.length > 0);
+    for (const f of geo.features) {
+      assert.equal(f.properties.level, 'district');
+      assert.equal(
+        f.geometry.type,
+        'Point',
+        'National view must use Point centroid summaries, not fabricated polygons'
+      );
+      assert.equal(f.properties.representation, 'centroid');
+      assert.equal(f.properties.is_centroid_fallback, true);
+      assert.ok(typeof f.properties.onset_w1 === 'number');
+      assert.ok(typeof f.properties.dry_spell_w1 === 'number');
+      assert.ok(typeof f.properties.heavy_rain_w1 === 'number');
+    }
+  });
+
+  test('district block loading getRegionsGeoJSON(districtId) returns authentic blocks and geometries', async () => {
+    const geo = await supabaseRepository.getRegionsGeoJSON('district:Rajasthan:Jodhpur');
+    assert.ok(geo.features.length > 0);
+    for (const f of geo.features) {
+      assert.equal(f.properties.level, 'block');
+      assert.equal(f.properties.district, 'Jodhpur');
+      assert.equal(f.properties.state, 'Rajasthan');
+      assert.ok(['Point', 'Polygon', 'MultiPolygon'].includes(f.geometry.type));
+    }
+  });
+
+  test('block selection loads neighborhood district context without breaking', async () => {
+    const geo = await supabaseRepository.getRegionsGeoJSON('IND_RJ_JOD_001');
+    assert.ok(geo.features.length > 0);
+    assert.ok(geo.features.some((f) => f.properties.id === 'IND_RJ_JOD_001'));
   });
 });

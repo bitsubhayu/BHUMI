@@ -127,34 +127,77 @@ function mockProbability(regionId: string, hazard: Hazard, week: LeadWeek): numb
   return Math.min(100, Math.max(0, smoothed));
 }
 
+const ALL_MOCK_LOCALES: Locale[] = ['en', 'hi', 'mr', 'te', 'ta', 'bn', 'gu', 'kn', 'pa', 'or'];
+
+function makeMockDriverMap(
+  enText: string,
+  partial: Partial<Record<Locale, string>> = {}
+): Record<Locale, string> {
+  const res: Partial<Record<Locale, string>> = {};
+  for (const loc of ALL_MOCK_LOCALES) {
+    res[loc] = partial[loc] || enText;
+  }
+  return res as Record<Locale, string>;
+}
+
 function mockDrivers(regionId: string, hazard: Hazard): Driver[] {
   const keys = ['enso_phase', 'mjo_phase', 'iod_index', 'sst_anomaly', 'soil_moisture'];
   const labels: Record<string, Record<Locale, string>> = {
-    enso_phase: {
-      en: 'Ocean temperature pattern (ENSO)',
+    enso_phase: makeMockDriverMap('Ocean temperature pattern (ENSO)', {
       hi: 'समुद्री तापमान पैटर्न (ENSO)',
       bn: 'সমুদ্রের তাপমাত্রার ধরন (ENSO)',
-    },
-    mjo_phase: {
-      en: 'Tropical wind pattern (MJO)',
+      mr: 'समुद्राच्या तापमानाचा पॅटर्न (ENSO)',
+      te: 'సముద్ర ఉష్ణోగ్రత నమూనా (ENSO)',
+      ta: 'கடல் வெப்பநிலை முறை (ENSO)',
+      gu: 'સમુદ્ર તાપમાન પેટર્ન (ENSO)',
+      kn: 'ಸಮುದ್ರ ತಾಪಮಾನ ಮಾದರಿ (ENSO)',
+      pa: 'ਸਮੁੰਦਰੀ ਤਾਪਮਾਨ ਪੈਟਰਨ (ENSO)',
+      or: 'ସମୁଦ୍ର ତାପମାତ୍ରା ପ୍ୟାଟର୍ଣ୍ଣ (ENSO)',
+    }),
+    mjo_phase: makeMockDriverMap('Tropical wind pattern (MJO)', {
       hi: 'उष्णकटिबंधीय वायु पैटर्न (MJO)',
       bn: 'গ্রীষ্মমণ্ডলীয় বায়ু ধরন (MJO)',
-    },
-    iod_index: {
-      en: 'Indian Ocean warmth (IOD)',
+      mr: 'उष्णकटिबंधीय वारा पॅटर्न (MJO)',
+      te: 'ఉష్ణమండల గాలి నమూనా (MJO)',
+      ta: 'வெப்பமண்டல காற்று முறை (MJO)',
+      gu: 'ઉષ્ણકટિબંધીય પવન પેટર્ન (MJO)',
+      kn: 'ಉಷ್ಣವಲಯದ ಗಾಳಿ ಮಾದರಿ (MJO)',
+      pa: 'ਗਰਮ ਖੰਡੀ ਹਵਾ ਪੈਟਰਨ (MJO)',
+      or: 'କ୍ରାନ୍ତୀୟ ବାୟୁ ପ୍ୟାଟର୍ଣ୍ଣ (MJO)',
+    }),
+    iod_index: makeMockDriverMap('Indian Ocean warmth (IOD)', {
       hi: 'हिंद महासागर की गर्मी (IOD)',
       bn: 'ভারত মহাসাগরের উষ্ণতা (IOD)',
-    },
-    sst_anomaly: {
-      en: 'Sea surface temperature',
+      mr: 'हिंदी महासागरातील तापमान (IOD)',
+      te: 'హిందూ మహాసముద్ర ఉష్ణోగ్రత (IOD)',
+      ta: 'இந்தியப் பெருங்கடல் வெப்பம் (IOD)',
+      gu: 'હિંદ મહાસાગરની ગરમી (IOD)',
+      kn: 'ಹಿಂದೂ ಮಹಾಸಾಗರದ ಉಷ್ಣತೆ (IOD)',
+      pa: 'ਹਿੰਦ ਮਹਾਸਾਗਰ ਦੀ ਗਰਮੀ (IOD)',
+      or: 'ଭାରତ ମହାସାଗର ଉଷ୍ମତା (IOD)',
+    }),
+    sst_anomaly: makeMockDriverMap('Sea surface temperature', {
       hi: 'समुद्र सतह तापमान',
       bn: 'সমুদ্র পৃষ্ঠের তাপমাত্রা',
-    },
-    soil_moisture: {
-      en: 'Soil moisture',
+      mr: 'समुद्र पृष्ठभागाचे तापमान',
+      te: 'సముద్ర ఉపరితల ఉష్ణోగ్రత',
+      ta: 'கடல் மேற்பரப்பு வெப்பநிலை',
+      gu: 'સમુદ્ર સપાટીનું તાપમાન',
+      kn: 'ಸಮುದ್ರ ಮೇಲ್ಮೈ ತಾಪಮಾನ',
+      pa: 'ਸਮੁੰਦਰ ਦੀ ਸਤ੍ਹਾ ਦਾ ਤਾਪਮਾਨ',
+      or: 'ସମୁଦ୍ର ପୃଷ୍ଠ ତାପମାତ୍ରା',
+    }),
+    soil_moisture: makeMockDriverMap('Soil moisture', {
       hi: 'मिट्टी की नमी',
       bn: 'মাটির আর্দ্রতা',
-    },
+      mr: 'मातीतील ओलावा',
+      te: 'నేలలో తేమ',
+      ta: 'மண் ஈரப்பதம்',
+      gu: 'જમીનમાં ભેજ',
+      kn: 'ಮಣ್ಣಿನ ತೇವಾಂಶ',
+      pa: 'ਮਿੱਟੀ ਦੀ ਨਮੀ',
+      or: 'ମୃତ୍ତିକା ଆର୍ଦ୍ରତା',
+    }),
   };
 
   const seed = hashString(`${regionId}-${hazard}-drivers`);
@@ -236,12 +279,64 @@ export const mockRepository: ForecastRepository = {
 
   async getRegionsGeoJSON(parentId: string | null) {
     return cached(`geojson-${parentId}`, () => {
-      const blocks = MOCK_REGIONS.filter(
-        (r) => r.level === 'block' && (parentId === null || r.parentId === parentId),
+      if (parentId === null) {
+        // District summary points on national view
+        const districts = MOCK_REGIONS.filter((r) => r.level === 'district');
+        const features = districts.map((d) => ({
+          type: 'Feature' as const,
+          geometry: {
+            type: 'Point' as const,
+            coordinates: d.centroid,
+          },
+          properties: {
+            id: d.id,
+            name: d.name,
+            level: 'district',
+            state: STATES[d.stateIdx],
+            district: d.name,
+            onset_w1: 45,
+            onset_w2: 50,
+            onset_w3: 55,
+            onset_w4: 60,
+            dry_spell_w1: 20,
+            dry_spell_w2: 25,
+            dry_spell_w3: 30,
+            dry_spell_w4: 35,
+            heavy_rain_w1: 15,
+            heavy_rain_w2: 15,
+            heavy_rain_w3: 15,
+            heavy_rain_w4: 15,
+            confidence: 80,
+            is_experimental: false,
+            representation: 'centroid',
+            is_centroid_fallback: true,
+          },
+        }));
+        return {
+          type: 'FeatureCollection' as const,
+          features,
+        };
+      }
+
+      // If parentId matches a district or state
+      let blocks = MOCK_REGIONS.filter(
+        (r) => r.level === 'block' && r.parentId === parentId
       );
+      if (blocks.length === 0) {
+        // Check if parentId is a block
+        const b = MOCK_REGIONS.find((r) => r.level === 'block' && r.id === parentId);
+        if (b) {
+          blocks = MOCK_REGIONS.filter(
+            (r) => r.level === 'block' && r.parentId === b.parentId
+          );
+        }
+      }
       const features = blocks.map((b) => {
         const f = blockPolygon(b.id, b.centroid);
         f.properties.name = b.name;
+        f.properties.district = MOCK_REGIONS.find((r) => r.id === b.parentId)?.name ?? '';
+        f.properties.state = STATES[b.stateIdx];
+        f.properties.level = 'block';
         return f;
       });
       return {
@@ -287,18 +382,25 @@ export const mockRepository: ForecastRepository = {
       ];
       const verdict = verdicts[Math.floor(rng() * verdicts.length)];
 
-      // MOCK COPY: needs native-speaker review
-      const textByLocale: Record<string, string> = {
-        en: `Demo advisory for ${crop}: conditions are ${verdict.replace(/_/g, ' ')} for week ${week}. Monitor local conditions before making final decisions.`,
+      const baseEn = `Demo advisory for ${crop}: conditions are ${verdict.replace(/_/g, ' ')} for week ${week}. Monitor local conditions before making final decisions.`;
+      const textByLocale: Record<Locale, string> = {
+        en: baseEn,
         hi: `${crop} के लिए डेमो सलाह: सप्ताह ${week} के लिए स्थिति ${verdict.replace(/_/g, ' ')} है। अंतिम निर्णय लेने से पहले स्थानीय परिस्थितियों की जांच करें।`,
         bn: `${crop}-এর জন্য ডেমো পরামর্শ: সপ্তাহ ${week}-এর জন্য পরিস্থিতি ${verdict.replace(/_/g, ' ')}। চূড়ান্ত সিদ্ধান্ত নেওয়ার আগে স্থানীয় পরিস্থিতি পর্যবেক্ষণ করুন।`,
+        mr: `${crop} साठी डेमो सल्ला: आठवडा ${week} साठी परिस्थिती ${verdict.replace(/_/g, ' ')} आहे.`,
+        te: `${crop} కొరకు డెమో సలహా: వారం ${week} కొరకు పరిస్థితులు ${verdict.replace(/_/g, ' ')} గా ఉన్నాయి.`,
+        ta: `${crop} க்கான மாதிரி ஆலோசனை: வாரம் ${week} க்கான நிலைமை ${verdict.replace(/_/g, ' ')}.`,
+        gu: `${crop} માટે ડેમો સલાહ: અઠવાડિયું ${week} માટે સ્થિતિ ${verdict.replace(/_/g, ' ')} છે.`,
+        kn: `${crop} ಗಾಗಿ ಡೆಮೊ ಸಲಹೆ: ವಾರ ${week} ಕ್ಕೆ ಪರಿಸ್ಥಿತಿಗಳು ${verdict.replace(/_/g, ' ')}.`,
+        pa: `${crop} ਲਈ ਡੈਮੋ ਸਲਾਹ: ਹਫ਼ਤਾ ${week} ਲਈ ਸਥਿਤੀਆਂ ${verdict.replace(/_/g, ' ')} ਹਨ।`,
+        or: `${crop} ପାଇଁ ଡେମୋ ପରାମର୍ଶ: ସପ୍ତାହ ${week} ପାଇଁ ପରିସ୍ଥିତି ${verdict.replace(/_/g, ' ')} ଅଟେ |`,
       };
       return {
         regionId,
         crop,
         week,
         verdict,
-        textByLocale: textByLocale as Record<Locale, string>,
+        textByLocale,
       };
     });
   },

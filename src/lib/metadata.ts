@@ -47,34 +47,6 @@ export const FALLBACK_MODEL_METADATA: ModelMetadata = {
   },
 };
 
-export const AUTHORITATIVE_MODEL_METADATA: ModelMetadata = {
-  modelVersion: 'v1.0.0',
-  modelName: 'BHUMI-Probabilistic-Downscaling-Engine',
-  trainedAt: '2026-09-28 05:34:45.959006+00:00',
-  modelTier: 'EXPERIMENTAL',
-  isProductionReady: false,
-  readinessStatus: 'INSUFFICIENT_CLASS_DIVERSITY',
-  reasons: [
-    'Archive contains only 1 season(s) ([2024]); minimum 3 required for multi-year ENSO/IOD cycle validation.',
-    'Archive contains only 2 block(s); minimum 20 required across diverse agro-climatic zones.',
-    'Dataset contains only 96 samples; minimum 1000 required for reliable downscaling.',
-    'Statistically inadequate minority class representation: Onset (count=4, required=30), Break (count=22, required=30), Heavy-Rain (count=4, required=30).',
-    'Held-out test set lacks adequate representation for: Onset, Heavy-Rain (minimum 5 samples each in test set for credible recall/precision evaluation).',
-  ],
-  gruStatus: 'DISABLED_INSUFFICIENT_TRAINING_DATA (samples=48, required=100)',
-  trainingCoverage: {
-    seasonsCount: 1,
-    seasonsList: [2024],
-    blocksCount: 2,
-    samplesGenerated: 96,
-    classDistribution: {
-      '0': 66,
-      '1': 4,
-      '2': 22,
-      '3': 4,
-    },
-  },
-};
 
 /**
  * Safely parses authoritative model metadata from a JSON-derived object.
