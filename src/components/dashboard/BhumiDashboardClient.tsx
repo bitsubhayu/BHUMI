@@ -6,6 +6,7 @@ import type {
   LivePredictionRow,
   TeleconnectionsHistoryRow,
   LiveWeatherBufferRow,
+  AdvisoryRuleRow,
 } from '@/lib/supabase/types';
 import type { ModelMetadata, BlockMapFeatureProperties } from '@/lib/data';
 import { ModelReadinessBanner } from '@/components/dashboard/ModelReadinessBanner';
@@ -14,6 +15,7 @@ import { RiskLegend } from '@/components/dashboard/RiskLegend';
 import { BlockForecastCard } from '@/components/dashboard/BlockForecastCard';
 import { PanchayatOutlookView } from '@/components/dashboard/PanchayatOutlookView';
 import { ExplainabilityPanel } from '@/components/dashboard/ExplainabilityPanel';
+import { AdvisoryShell } from '@/components/advisory/AdvisoryShell';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Compass, MapPin } from 'lucide-react';
@@ -24,6 +26,7 @@ interface BhumiDashboardClientProps {
   initialGeoJSON: GeoJSON.FeatureCollection<GeoJSON.Geometry, BlockMapFeatureProperties>;
   modelMetadata: ModelMetadata;
   teleconnections: TeleconnectionsHistoryRow[];
+  initialAdvisoryRules?: AdvisoryRuleRow[];
 }
 
 export function BhumiDashboardClient({
@@ -32,6 +35,7 @@ export function BhumiDashboardClient({
   initialGeoJSON,
   modelMetadata,
   teleconnections,
+  initialAdvisoryRules,
 }: BhumiDashboardClientProps) {
   // Default to first block if available
   const [selectedBlockId, setSelectedBlockId] = useState<string | null>(
@@ -171,7 +175,7 @@ export function BhumiDashboardClient({
                   <div className="p-2 rounded bg-muted/30">
                     <span className="text-[10px] block">Zone</span>
                     <span className="font-semibold text-foreground">
-                      {selectedBlock.agro_climatic_zone || 'Semi-Arid Western'}
+                      {selectedBlock.agro_climatic_zone || 'N/A'}
                     </span>
                   </div>
                   <div className="p-2 rounded bg-muted/30">
@@ -200,6 +204,17 @@ export function BhumiDashboardClient({
             </Card>
           )}
         </div>
+      </section>
+
+      {/* ICAR / KVK Multilingual Crop Advisory Section */}
+      <section aria-label="Agronomic Crop Advisory">
+        <AdvisoryShell
+          prediction={activeWeekPrediction}
+          block={selectedBlock}
+          isModelProductionReady={modelMetadata.isProductionReady}
+          advisoryRules={initialAdvisoryRules}
+          selectedWeek={selectedWeek}
+        />
       </section>
     </div>
   );

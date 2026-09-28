@@ -173,5 +173,6 @@ export async function getRecentTeleconnections(limit = 14): Promise<Teleconnecti
 }
 
 export * from './geo';
+export * from './advisory';
 
 

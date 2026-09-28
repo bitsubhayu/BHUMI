@@ -4,6 +4,7 @@
  */
 
 export type AgronomicAction = 'safe_to_sow' | 'delay_sowing' | 'prepare_irrigation' | 'drainage_alert' | 'monitor_conditions';
+export type AgronomicActionType = AgronomicAction;
 
 export type CropType = 'paddy' | 'soybean' | 'cotton' | 'maize' | 'pulses' | 'groundnut' | 'general';
 

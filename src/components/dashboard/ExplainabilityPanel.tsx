@@ -74,7 +74,7 @@ export function ExplainabilityPanel({
               <span>Primary Physical Driver</span>
             </div>
             <p className="text-sm font-bold font-mono text-foreground leading-snug">
-              {prediction?.primary_driver || 'Awaiting block prediction'}
+              {prediction?.primary_driver || 'N/A'}
             </p>
             <p className="text-[11px] text-muted-foreground leading-tight">
               Dominant synoptic pattern driving the sub-seasonal probability distribution.
@@ -87,7 +87,7 @@ export function ExplainabilityPanel({
               <span>Secondary Driver</span>
             </div>
             <p className="text-sm font-bold font-mono text-foreground leading-snug">
-              {prediction?.secondary_driver || 'Local Boundary Layer Feedback'}
+              {prediction?.secondary_driver || 'N/A'}
             </p>
             <p className="text-[11px] text-muted-foreground leading-tight">
               Secondary convective trigger or surface moisture constraint.
@@ -200,7 +200,7 @@ export function ExplainabilityPanel({
                 Recent Ground Buffer (Last {recentObservations.length} Days)
               </span>
               <span className="text-[11px] font-mono text-muted-foreground">
-                Source: {recentObservations[0]?.data_source || 'Live Ingestion Buffer'}
+                Source: {recentObservations[0]?.data_source || 'N/A'}
               </span>
             </div>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs font-mono">

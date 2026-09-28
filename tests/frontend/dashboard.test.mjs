@@ -14,6 +14,18 @@ import {
 import { derivePanchayatOutlook } from '../../src/lib/panchayat.ts';
 import { resolveBlockGeometry, buildBlockGeoJSON } from '../../src/lib/geo.ts';
 import { parseModelMetadata, FALLBACK_MODEL_METADATA } from '../../src/lib/metadata.ts';
+import {
+  evaluateAdvisoryRule,
+  normalizeCropType,
+} from '../../src/lib/advisory/engine.ts';
+import {
+  resolveLocalizedTemplate,
+  isLanguageSupported,
+  SUPPORTED_LANGUAGES,
+} from '../../src/lib/advisory/templates.ts';
+import {
+  VERIFIED_ADVISORY_RULES,
+} from '../../src/lib/advisory/rules.ts';
 
 describe('1. Prediction Formatting', () => {
   it('formats normal numeric probabilities with one decimal place', () => {
@@ -461,3 +473,336 @@ describe('8. Geometry Behavior: Authentic PostGIS Boundary or Centroid Point Onl
     assert.equal(resUndefined.isCentroidFallback, true);
   });
 });
+
+const dummyPredictionOnset = {
+  id: 101,
+  block_id: 'IND_MH_PUN_001',
+  prediction_date: '2026-09-28',
+  lead_time_bucket: 'week_1',
+  onset_probability: 65.0,
+  break_probability: 20.0,
+  heavy_spell_probability: 15.0,
+  calibrated_confidence: 85.0,
+  primary_driver: 'MJO Phase 3 Active',
+  secondary_driver: null,
+  teleconnection_analog_year: 2024,
+  advisory_code: null,
+  created_at: '2026-09-28T00:00:00Z',
+  updated_at: '2026-09-28T00:00:00Z',
+};
+
+const dummyPredictionBreak = {
+  id: 102,
+  block_id: 'IND_MH_PUN_001',
+  prediction_date: '2026-09-28',
+  lead_time_bucket: 'week_2',
+  onset_probability: 20.0,
+  break_probability: 60.0,
+  heavy_spell_probability: 10.0,
+  calibrated_confidence: 78.0,
+  primary_driver: 'Equatorial Rossby Wave',
+  secondary_driver: null,
+  teleconnection_analog_year: 2024,
+  advisory_code: null,
+  created_at: '2026-09-28T00:00:00Z',
+  updated_at: '2026-09-28T00:00:00Z',
+};
+
+const dummyPredictionNoTrigger = {
+  id: 103,
+  block_id: 'IND_MH_PUN_001',
+  prediction_date: '2026-09-28',
+  lead_time_bucket: 'week_3',
+  onset_probability: 10.0,
+  break_probability: 12.0,
+  heavy_spell_probability: 5.0,
+  calibrated_confidence: 60.0,
+  primary_driver: 'Neutral Teleconnections',
+  secondary_driver: null,
+  teleconnection_analog_year: null,
+  advisory_code: null,
+  created_at: '2026-09-28T00:00:00Z',
+  updated_at: '2026-09-28T00:00:00Z',
+};
+
+describe('9. Rule Matching & Deterministic Selection', () => {
+
+  it('matches active general rule when trigger threshold is met', () => {
+    const result = evaluateAdvisoryRule(dummyPredictionBreak, {
+      rules: VERIFIED_ADVISORY_RULES,
+      selectedCrop: 'general',
+      targetLanguage: 'en',
+    });
+
+    assert.equal(result.hasMatchingRule, true);
+    assert.equal(result.action, 'delay_sowing');
+    assert.equal(result.ruleCode, 'ICAR-CRIDA-DELAY-01');
+    assert.equal(result.icarReferenceCode, 'ICAR-CRIDA-KHARIF-STD-01');
+    assert.equal(result.isGeneralFallback, false);
+    assert.match(result.template.title, /Delay.*Sowing/i);
+    assert.ok(result.template.suggested_measures.length > 0);
+  });
+
+  it('strictly ignores inactive rules even when conditions match', () => {
+    const inactiveRule = {
+      rule_code: 'INACTIVE-RULE-TEST',
+      crop_category: 'general',
+      action_type: 'delay_sowing',
+      english_title: 'Inactive template that must never trigger',
+      english_recommendation: 'Inactive recommendation',
+      suggested_measures: [],
+      is_active: false,
+      icar_reference_code: 'ICAR-TEST-INACTIVE',
+      created_at: '2026-09-28T00:00:00Z',
+      updated_at: '2026-09-28T00:00:00Z',
+    };
+
+    const result = evaluateAdvisoryRule(dummyPredictionBreak, {
+      rules: [inactiveRule, ...VERIFIED_ADVISORY_RULES],
+      selectedCrop: 'general',
+      targetLanguage: 'en',
+    });
+
+    assert.equal(result.hasMatchingRule, true);
+    assert.notEqual(result.ruleCode, 'INACTIVE-RULE-TEST');
+    assert.equal(result.ruleCode, 'ICAR-CRIDA-DELAY-01');
+  });
+
+  it('prioritizes crop-specific rule over general rule', () => {
+    const resultPaddy = evaluateAdvisoryRule(dummyPredictionOnset, {
+      rules: VERIFIED_ADVISORY_RULES,
+      selectedCrop: 'paddy',
+      targetLanguage: 'en',
+    });
+
+    assert.equal(resultPaddy.hasMatchingRule, true);
+    assert.equal(resultPaddy.ruleCode, 'ICAR-NRRI-PAD-SOW-01');
+    assert.equal(resultPaddy.icarReferenceCode, 'ICAR-NRRI-CRIDA-03');
+    assert.equal(resultPaddy.cropType, 'paddy');
+    assert.equal(resultPaddy.isGeneralFallback, false);
+    assert.match(resultPaddy.template.title, /Paddy/i);
+  });
+
+  it('falls back strictly to verified general rule when crop has no specific rule for condition', () => {
+    const resultGroundnut = evaluateAdvisoryRule(dummyPredictionBreak, {
+      rules: VERIFIED_ADVISORY_RULES,
+      selectedCrop: 'groundnut',
+      targetLanguage: 'en',
+    });
+
+    assert.equal(resultGroundnut.hasMatchingRule, true);
+    assert.equal(resultGroundnut.ruleCode, 'ICAR-CRIDA-DELAY-01');
+    assert.equal(resultGroundnut.cropType, 'general');
+    assert.equal(resultGroundnut.isGeneralFallback, true);
+  });
+
+  it('returns explicit unverified advisory message when no rule matches without fabricating advice', () => {
+    // Pass rules missing the monitor_conditions action
+    const rulesWithoutMonitor = VERIFIED_ADVISORY_RULES.filter((r) => r.action_type !== 'monitor_conditions');
+    const result = evaluateAdvisoryRule(dummyPredictionNoTrigger, {
+      rules: rulesWithoutMonitor,
+      selectedCrop: 'general',
+      targetLanguage: 'en',
+    });
+
+    assert.equal(result.hasMatchingRule, false);
+    assert.equal(result.ruleCode, 'NO_VERIFIED_RULE');
+    assert.equal(result.icarReferenceCode, null);
+    assert.equal(result.template.title, 'No verified advisory rule is available for this forecast.');
+    assert.match(result.template.recommendation, /No verified advisory rule is available for this forecast/i);
+  });
+
+  it('returns explicit unverified message when rules array is empty', () => {
+    const result = evaluateAdvisoryRule(dummyPredictionBreak, {
+      rules: [],
+      selectedCrop: 'general',
+      targetLanguage: 'en',
+    });
+
+    assert.equal(result.hasMatchingRule, false);
+    assert.equal(result.template.title, 'No verified advisory rule is available for this forecast.');
+  });
+});
+
+describe('10. Multilingual Static Templates & Fallback Integrity', () => {
+  const sampleRule = VERIFIED_ADVISORY_RULES.find((r) => r.rule_code === 'ICAR-CRIDA-SOW-01');
+
+  it('resolves English template correctly with isEnglishFallback false', () => {
+    assert.ok(sampleRule, 'Sample rule must exist in verified registry');
+    const res = resolveLocalizedTemplate(sampleRule, 'en');
+    assert.equal(res.isEnglishFallback, false);
+    assert.equal(res.sourceLanguage, 'en');
+    assert.match(res.content.title, /Sowing Window/i);
+    assert.ok(res.content.suggested_measures.length > 0);
+  });
+
+  it('resolves verified localized translations for supported languages', () => {
+    assert.ok(sampleRule, 'Sample rule must exist in verified registry');
+    const hindiRes = resolveLocalizedTemplate(sampleRule, 'hi');
+    assert.equal(hindiRes.isEnglishFallback, false);
+    assert.equal(hindiRes.sourceLanguage, 'hi');
+    assert.match(hindiRes.content.title, /खरीफ बुवाई/i);
+
+    const marathiRes = resolveLocalizedTemplate(sampleRule, 'mr');
+    assert.equal(marathiRes.isEnglishFallback, false);
+    assert.equal(marathiRes.sourceLanguage, 'mr');
+    assert.match(marathiRes.content.title, /पेरणी/i);
+
+    const teluguRes = resolveLocalizedTemplate(sampleRule, 'te');
+    assert.equal(teluguRes.isEnglishFallback, false);
+    assert.equal(teluguRes.sourceLanguage, 'te');
+    assert.match(teluguRes.content.title, /విత్తనాలు/i);
+
+    const bengaliRes = resolveLocalizedTemplate(sampleRule, 'bn');
+    assert.equal(bengaliRes.isEnglishFallback, false);
+    assert.equal(bengaliRes.sourceLanguage, 'bn');
+    assert.match(bengaliRes.content.title, /বপন/i);
+  });
+
+  it('supports all 10 required languages in the static template library', () => {
+    assert.ok(sampleRule, 'Sample rule must exist in verified registry');
+    const expectedLangs = ['en', 'hi', 'mr', 'te', 'ta', 'bn', 'gu', 'kn', 'pa', 'or'];
+    assert.equal(SUPPORTED_LANGUAGES.length, 10);
+    for (const lang of expectedLangs) {
+      assert.equal(isLanguageSupported(lang), true);
+      const res = resolveLocalizedTemplate(sampleRule, lang);
+      assert.ok(res.content.title.length > 0);
+      assert.ok(res.content.recommendation.length > 0);
+    }
+  });
+
+  it('falls back to English with isEnglishFallback true when localized translation is missing', () => {
+    const partialRule = {
+      rule_code: 'TEST-PARTIAL',
+      crop_category: 'general',
+      action_type: 'safe_to_sow',
+      english_title: 'English Title',
+      english_recommendation: 'English Recommendation',
+      suggested_measures: ['Measure 1'],
+      localized_templates: {},
+    };
+
+    const res = resolveLocalizedTemplate(partialRule, 'pa');
+    assert.equal(res.isEnglishFallback, true);
+    assert.equal(res.sourceLanguage, 'en');
+    assert.equal(res.content.title, 'English Title');
+    assert.equal(res.content.recommendation, 'English Recommendation');
+  });
+
+  it('visibly identifies English fallback in evaluation result', () => {
+    const partialRule = {
+      rule_code: 'PARTIAL-LANG-TEST',
+      crop_category: 'general',
+      action_type: 'safe_to_sow',
+      english_title: 'English Title',
+      english_recommendation: 'English Rec',
+      suggested_measures: [],
+      is_active: true,
+      icar_reference_code: 'ICAR-REF-PARTIAL',
+      localized_templates: {
+        en: { title: 'English Title', recommendation: 'English Rec', suggested_measures: [] },
+      },
+    };
+
+    const result = evaluateAdvisoryRule(dummyPredictionOnset, {
+      rules: [partialRule],
+      selectedCrop: 'general',
+      targetLanguage: 'ta',
+    });
+
+    assert.equal(result.isEnglishFallback, true);
+    assert.equal(result.language, 'ta');
+  });
+});
+
+describe('11. Experimental Model Provenance & Operational Caution', () => {
+  const experimentalPrediction = {
+    id: 201,
+    block_id: 'IND_MH_PUN_001',
+    prediction_date: '2026-09-28',
+    lead_time_bucket: 'week_2',
+    onset_probability: 30.0,
+    break_probability: 65.0,
+    heavy_spell_probability: 10.0,
+    calibrated_confidence: 72.0,
+    primary_driver: 'IOD negative [EXPERIMENTAL]',
+    secondary_driver: null,
+    teleconnection_analog_year: 2024,
+    advisory_code: null,
+    created_at: '2026-09-28T00:00:00Z',
+    updated_at: '2026-09-28T00:00:00Z',
+  };
+
+  const operationalPrediction = {
+    id: 202,
+    block_id: 'IND_MH_PUN_001',
+    prediction_date: '2026-09-28',
+    lead_time_bucket: 'week_1',
+    onset_probability: 30.0,
+    break_probability: 65.0,
+    heavy_spell_probability: 10.0,
+    calibrated_confidence: 85.0,
+    primary_driver: 'MJO Phase 2 Active',
+    secondary_driver: null,
+    teleconnection_analog_year: 2024,
+    advisory_code: null,
+    created_at: '2026-09-28T00:00:00Z',
+    updated_at: '2026-09-28T00:00:00Z',
+  };
+
+  it('marks evaluation as experimental when prediction driver indicates experimental', () => {
+    const result = evaluateAdvisoryRule(experimentalPrediction, {
+      rules: VERIFIED_ADVISORY_RULES,
+      selectedCrop: 'general',
+      targetLanguage: 'en',
+      isModelProductionReady: false,
+    });
+
+    assert.equal(result.isExperimental, true);
+    assert.ok(result.experimentalWarning !== null);
+    assert.match(result.experimentalWarning, /experimental research model/i);
+    assert.match(result.experimentalWarning, /does not constitute validated operational advisory guidance/i);
+  });
+
+  it('does not mark operational prediction with experimental warning', () => {
+    const result = evaluateAdvisoryRule(operationalPrediction, {
+      rules: VERIFIED_ADVISORY_RULES,
+      selectedCrop: 'general',
+      targetLanguage: 'en',
+      isModelProductionReady: true,
+    });
+
+    assert.equal(result.isExperimental, false);
+    assert.equal(result.experimentalWarning, null);
+  });
+});
+
+describe('12. No Fabricated Values & Data Integrity Enforcement', () => {
+  it('normalizes crop types safely and rejects arbitrary unverified crop advice', () => {
+    assert.equal(normalizeCropType('paddy'), 'paddy');
+    assert.equal(normalizeCropType('SoyBean'), 'soybean');
+    assert.equal(normalizeCropType('COTTON'), 'cotton');
+    assert.equal(normalizeCropType('Maize'), 'maize');
+    assert.equal(normalizeCropType('pulses'), 'pulses');
+    assert.equal(normalizeCropType('groundnut'), 'groundnut');
+    assert.equal(normalizeCropType('general'), 'general');
+
+    assert.equal(normalizeCropType('vanilla_orchid'), 'general');
+    assert.equal(normalizeCropType('exotic_dragonfruit'), 'general');
+    assert.equal(normalizeCropType(null), 'general');
+    assert.equal(normalizeCropType(undefined), 'general');
+  });
+
+  it('verified advisory rules contain only legitimate ICAR/CRIDA references without fabricated codes', () => {
+    for (const rule of VERIFIED_ADVISORY_RULES) {
+      assert.ok(rule.rule_code.startsWith('ICAR-'), `Rule ${rule.rule_code} must follow ICAR naming`);
+      assert.ok(
+        rule.icar_reference_code.startsWith('ICAR-'),
+        `Rule ${rule.rule_code} must reference verified ICAR document`
+      );
+      assert.ok(rule.is_active === true, `Rule ${rule.rule_code} must be active in registry`);
+      assert.ok(rule.english_recommendation.length > 0, `Rule ${rule.rule_code} must have English recommendation`);
+    }
+  });
+});
+

@@ -18,6 +18,7 @@ import {
   getModelMetadata,
   getRecentTeleconnections,
   buildBlockGeoJSON,
+  getAdvisoryRules,
 } from '@/lib/data';
 
 export const revalidate = 60;
@@ -26,11 +27,12 @@ export default async function HomePage() {
   const isConfigured = isSupabaseConfigured();
 
   // Fetch precomputed data server-side
-  const [blocks, predictions, modelMetadata, teleconnections] = await Promise.all([
+  const [blocks, predictions, modelMetadata, teleconnections, advisoryRules] = await Promise.all([
     getBlocks(),
     getLivePredictions(),
     getModelMetadata(),
     getRecentTeleconnections(14),
+    getAdvisoryRules(),
   ]);
 
   const blockGeoJSON = buildBlockGeoJSON(blocks, predictions);
@@ -96,6 +98,7 @@ export default async function HomePage() {
             initialGeoJSON={blockGeoJSON}
             modelMetadata={modelMetadata}
             teleconnections={teleconnections}
+            initialAdvisoryRules={advisoryRules}
           />
         </section>
 

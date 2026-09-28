@@ -95,7 +95,7 @@ export interface AdvisoryRuleRow {
   english_recommendation: string;
   suggested_measures: string[];
   icar_reference_code: string | null;
-  localized_templates: Record<string, string>;
+  localized_templates: Record<string, unknown>;
   is_active: boolean;
   created_at: string;
   updated_at: string;

@@ -312,13 +312,13 @@ export function BlockForecastCard({
                 <div>
                   <span className="text-[10.5px] font-medium text-muted-foreground">Primary Driver</span>
                   <p className="font-semibold text-foreground mt-0.5 font-mono">
-                    {currentPred.primary_driver || 'Global Teleconnection Baseline'}
+                    {currentPred.primary_driver || 'N/A'}
                   </p>
                 </div>
                 <div>
                   <span className="text-[10.5px] font-medium text-muted-foreground">Secondary Driver</span>
                   <p className="font-semibold text-foreground mt-0.5 font-mono">
-                    {currentPred.secondary_driver || 'Local Soil Moisture Feedback'}
+                    {currentPred.secondary_driver || 'N/A'}
                   </p>
                 </div>
                 <div>
@@ -326,7 +326,7 @@ export function BlockForecastCard({
                   <p className="font-semibold text-foreground mt-0.5 font-mono">
                     {currentPred.teleconnection_analog_year
                       ? `Monsoon ${currentPred.teleconnection_analog_year}`
-                      : 'Multi-decadal climatology'}
+                      : 'N/A'}
                   </p>
                 </div>
               </div>
