@@ -1,33 +1,17 @@
-name: BHUMI Daily Live Synchronization
+name: BHUMI Live Source Smoke Tests
 
 on:
-  schedule:
-    # Runs daily at 00:30 UTC (06:00 AM IST)
-    - cron: '30 0 * * *'
   workflow_dispatch:
-    inputs:
-      dry_run:
-        description: 'Simulate without writing to database'
-        type: boolean
-        default: false
-      days:
-        description: 'Number of recent days to synchronize'
-        type: string
-        default: '7'
-      sample_only:
-        description: 'Run on small representative sample only'
-        type: boolean
-        default: false
 
 concurrency:
-  group: bhumi-daily-sync
+  group: bhumi-live-source-smoke-tests
   cancel-in-progress: false
 
 jobs:
-  daily_sync:
-    name: Execute Daily Weather & Teleconnections Sync
+  smoke_tests:
+    name: Run Live Source Health & Smoke Tests
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
     env:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
@@ -52,11 +36,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r pipeline/requirements.txt
 
-      - name: Run Deterministic Pipeline Tests
-        run: |
-          python -m unittest discover -s tests/unit
-
-      - name: Execute Daily Live Synchronization
+      - name: Execute Live Source Smoke Test Suite
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
@@ -65,13 +45,4 @@ jobs:
           EARTHDATA_USERNAME: ${{ secrets.EARTHDATA_USERNAME }}
           EARTHDATA_PASSWORD: ${{ secrets.EARTHDATA_PASSWORD }}
         run: |
-          EXTRA_ARGS=""
-          if [ "${{ inputs.dry_run }}" = "true" ]; then
-            EXTRA_ARGS="$EXTRA_ARGS --dry-run"
-          fi
-          if [ "${{ inputs.sample_only }}" = "true" ]; then
-            EXTRA_ARGS="$EXTRA_ARGS --sample-only"
-          fi
-          DAYS="${{ inputs.days || '7' }}"
-          
-          python -m pipeline.jobs.daily_sync --days "$DAYS" $EXTRA_ARGS
+          python -m unittest discover -s tests/live -v

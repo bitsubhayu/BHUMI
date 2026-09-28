@@ -1,6 +1,5 @@
 """Unit tests for monsoon weather state classification engine."""
 
-import datetime
 import unittest
 from pipeline.transforms.seasonal_pack import get_season_dates
 from pipeline.transforms.weather_state import classify_monsoon_states
