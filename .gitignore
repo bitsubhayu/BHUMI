@@ -67,8 +67,12 @@ wheels/
 .installed.cfg
 *.egg
 .pytest_cache/
+pipeline/cache/
+*.grib*
+*.grb*
 
 # Ensure frontend libraries are tracked
 !src/lib/
 !src/lib/**
+
 

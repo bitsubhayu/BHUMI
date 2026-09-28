@@ -50,8 +50,9 @@ jobs:
           python-version: '3.12'
           cache: 'pip'
 
-      - name: Install Pipeline Dependencies
+      - name: Install System and Pipeline Dependencies
         run: |
+          sudo apt-get update && sudo apt-get install -y libeccodes-dev
           python -m pip install --upgrade pip
           pip install -r pipeline/requirements.txt
 

@@ -14,9 +14,11 @@ pydantic>=2.0.0
 pillow>=10.0.0
 h5py>=3.8.0
 
-# Climate & Remote Sensing Data Access (Optional / Advanced)
-# Used for NetCDF/GRIB extraction and CDS reanalysis
+# Remote Sensing & Meteorological Access
 cdsapi>=0.7.0
+ecmwf-opendata>=0.3.30
+eccodes>=2.40.0
+pynacl>=1.5.0
 netCDF4>=1.6.0; sys_platform != "win32" or python_version < "3.13"
 xarray>=2023.1.0
 

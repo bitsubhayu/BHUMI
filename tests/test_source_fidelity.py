@@ -191,10 +191,96 @@ class TestSourceFidelityAndIntegrity(unittest.TestCase):
         self.assertNotIn("prate * 86400", gfs_code.lower())
         self.assertNotIn("prate*86400", gfs_code.lower())
 
-    def test_era5_transparent_cds_availability(self):
-        """Verifies that Era5Adapter transparently marks is_cds_direct=False and labels
+    def test_ecmwf_direct_path_actually_retrieves_from_direct_source(self):
+        """Verifies that the primary ECMWF retrieval path directly consumes ECMWF Open Data
 
-        data_source as ECMWF_ERA5_REANALYSIS_ARCHIVE_FALLBACK when CDS API is unaccepted.
+        operational forecast GRIB2 data and sets is_direct_ecmwf=True with
+        data_source='ECMWF_OPEN_DATA_DIRECT'.
+        """
+        adapter = EcmwfAdapter(config=self.config)
+        res = adapter.fetch_daily_forecast(
+            target_date=datetime.date.today(),
+            lat=18.5204,
+            lon=73.8567,
+        )
+        self.assertTrue(res.success, f"ECMWF direct fetch failed: {res.error_message}")
+        rec = res.data
+        self.assertIsNotNone(rec)
+        self.assertTrue(rec.get("is_direct_ecmwf"), "Must be direct ECMWF Open Data")
+        self.assertEqual(rec.get("data_source"), "ECMWF_OPEN_DATA_DIRECT")
+        self.assertGreaterEqual(rec.get("rainfall_mm", -1), 0.0)
+        self.assertGreater(rec.get("max_temp_c", -100), rec.get("min_temp_c", -100))
+
+    def test_ecmwf_open_meteo_used_only_when_direct_ecmwf_fails(self):
+        """Verifies that Open-Meteo is used ONLY as a fallback when direct ECMWF fails,
+
+        and that the returned record is strictly labeled as ECMWF_FALLBACK_OPEN_METEO
+        with is_direct_ecmwf=False (never claiming direct ECMWF).
+        """
+        adapter = EcmwfAdapter(config=self.config)
+        with patch.object(adapter, "fetch_direct_ecmwf_open_data", side_effect=RuntimeError("Simulated direct outage")):
+            res = adapter.fetch_daily_forecast(
+                target_date=datetime.date.today(),
+                lat=18.5204,
+                lon=73.8567,
+            )
+            self.assertTrue(res.success, f"ECMWF fallback fetch failed: {res.error_message}")
+            rec = res.data
+            self.assertIsNotNone(rec)
+            # Must strictly identify fallback Open-Meteo
+            self.assertFalse(rec.get("is_direct_ecmwf"), "Fallback must NOT claim direct ECMWF")
+            self.assertEqual(rec.get("data_source"), "ECMWF_FALLBACK_OPEN_METEO")
+            self.assertNotEqual(rec.get("data_source"), "ECMWF_OPEN_DATA_DIRECT")
+
+    def test_era5_cds_response_is_actually_parsed_when_available(self):
+        """Verifies that when CDS API returns dataset data, Era5Adapter actually
+
+        downloads/reads and parses the physical GRIB variables using eccodes,
+        correctly setting is_cds_direct=True and data_source='COPERNICUS_CDS_DIRECT'.
+        """
+        adapter = Era5Adapter(config=self.config)
+        cache_grib = os.path.join(os.path.dirname(__file__), "..", "pipeline", "cache", "ecmwf", "ecmwf_oper_fc_24h.grib2")
+        if not os.path.exists(cache_grib):
+            ecm = EcmwfAdapter(config=self.config)
+            ecm.fetch_daily_forecast(datetime.date.today(), 18.5204, 73.8567)
+        self.assertTrue(os.path.exists(cache_grib), "Cached test GRIB dataset should be present")
+
+        with open(cache_grib, "rb") as f:
+            sample_grib_bytes = f.read()
+
+        # 1. Test parse_cds_grib directly
+        parsed = adapter.parse_cds_grib(sample_grib_bytes, 18.5204, 73.8567)
+        self.assertTrue(parsed["is_cds_direct"])
+        self.assertEqual(parsed["data_source"], "COPERNICUS_CDS_DIRECT")
+        self.assertIn("rainfall_mm", parsed)
+        self.assertIn("max_temp_c", parsed)
+        self.assertIn("min_temp_c", parsed)
+        self.assertIn("soil_moisture_idx", parsed)
+
+        # 2. Test full fetch_daily_reanalysis flow with mock CDS response
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.headers = {"Content-Type": "application/x-grib"}
+        mock_resp.content = sample_grib_bytes
+
+        with patch("requests.post", return_value=mock_resp):
+            res = adapter.fetch_daily_reanalysis(
+                target_date=datetime.date(2024, 5, 15),
+                lat=18.5204,
+                lon=73.8567,
+            )
+            self.assertTrue(res.success, f"ERA5 direct CDS fetch failed: {res.error_message}")
+            rec = res.data
+            self.assertIsNotNone(rec)
+            self.assertTrue(rec.get("is_cds_direct"), "Must be direct CDS")
+            self.assertEqual(rec.get("data_source"), "COPERNICUS_CDS_DIRECT")
+
+    def test_era5_fallback_label_truthful_when_cds_unavailable(self):
+        """Verifies that when CDS API is unavailable or terms unaccepted,
+
+        Era5Adapter transparently marks is_cds_direct=False and labels
+        data_source as ECMWF_ERA5_REANALYSIS_ARCHIVE_FALLBACK, never claiming
+        it is direct CDS.
         """
         adapter = Era5Adapter(config=self.config)
         res = adapter.fetch_daily_reanalysis(
@@ -205,30 +291,10 @@ class TestSourceFidelityAndIntegrity(unittest.TestCase):
         self.assertTrue(res.success)
         rec = res.data
         self.assertIsNotNone(rec)
-
-        # CDS is not accepted, so adapter MUST report is_cds_direct=False
-        self.assertFalse(rec.get("is_cds_direct", True))
+        self.assertFalse(rec.get("is_cds_direct", True), "Fallback must NOT claim is_cds_direct=True")
         self.assertEqual(rec.get("data_source"), "ECMWF_ERA5_REANALYSIS_ARCHIVE_FALLBACK")
+        self.assertNotEqual(rec.get("data_source"), "COPERNICUS_CDS_DIRECT")
 
-    def test_ecmwf_transparent_source_labeling(self):
-        """Verifies that EcmwfAdapter transparently labels data_source as
-
-        ECMWF_FALLBACK_OPEN_METEO when direct portal is unreachable, and never claims
-        it is direct ECMWF Open Data.
-        """
-        adapter = EcmwfAdapter(config=self.config)
-        res = adapter.fetch_daily_forecast(
-            target_date=datetime.date.today(),
-            lat=18.5204,
-            lon=73.8567,
-        )
-        self.assertTrue(res.success)
-        rec = res.data
-        self.assertIsNotNone(rec)
-
-        if not rec.get("is_direct_ecmwf", False):
-            self.assertEqual(rec.get("data_source"), "ECMWF_FALLBACK_OPEN_METEO")
-            self.assertFalse(rec["is_direct_ecmwf"])
 
     def test_214_day_series_integrity_and_cardinality(self):
         """Verifies that Era5Adapter.fetch_seasonal_series returns exactly 214 daily points
