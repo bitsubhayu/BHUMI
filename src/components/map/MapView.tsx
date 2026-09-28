@@ -4,7 +4,6 @@ import {
   useEffect,
   useRef,
   useState,
-  useCallback,
   forwardRef,
   useImperativeHandle,
 } from 'react';
@@ -12,7 +11,6 @@ import dynamic from 'next/dynamic';
 import type {
   Map as MapLibreMap,
   MapMouseEvent,
-  ExpressionSpecification,
   GeoJSONSource,
   MapGeoJSONFeature,
 } from 'maplibre-gl';
@@ -185,6 +183,32 @@ function MapViewInner(
               },
             });
           }
+
+          // Circle layer for Point / centroid-fallback features
+          if (!map.getLayer('risk-circle')) {
+            map.addLayer({
+              id: 'risk-circle',
+              type: 'circle',
+              source: 'risk',
+              filter: ['==', ['geometry-type'], 'Point'],
+              paint: {
+                'circle-color': buildColorExpression(activeHazard, activeWeek),
+                'circle-radius': [
+                  'case',
+                  ['==', ['get', 'id'], selectedRegionId ?? ''],
+                  12,
+                  8,
+                ],
+                'circle-stroke-color': '#101413',
+                'circle-stroke-width': [
+                  'case',
+                  ['==', ['get', 'id'], selectedRegionId ?? ''],
+                  2.5,
+                  1,
+                ],
+              },
+            });
+          }
         });
 
         map.on('error', (e: { error?: { message?: string } }) => {
@@ -200,18 +224,27 @@ function MapViewInner(
         });
 
         // Click handler
-        map.on('click', 'risk-fill', (e: MapMouseEvent & { features?: MapGeoJSONFeature[] }) => {
+        const handleFeatureClick = (e: MapMouseEvent & { features?: MapGeoJSONFeature[] }) => {
           if (!e.features?.[0]) return;
           const props = e.features[0].properties as RegionFeatureProperties;
           const centroid: [number, number] = [e.lngLat.lng, e.lngLat.lat];
           onRegionClick(String(props.id), centroid);
-        });
+        };
+
+        map.on('click', 'risk-fill', handleFeatureClick);
+        map.on('click', 'risk-circle', handleFeatureClick);
 
         // Hover effect
         map.on('mouseenter', 'risk-fill', () => {
           map.getCanvas().style.cursor = 'pointer';
         });
         map.on('mouseleave', 'risk-fill', () => {
+          map.getCanvas().style.cursor = '';
+        });
+        map.on('mouseenter', 'risk-circle', () => {
+          map.getCanvas().style.cursor = 'pointer';
+        });
+        map.on('mouseleave', 'risk-circle', () => {
           map.getCanvas().style.cursor = '';
         });
 
@@ -254,6 +287,13 @@ function MapViewInner(
         buildColorExpression(activeHazard, activeWeek),
       );
     }
+    if (map.getLayer('risk-circle')) {
+      map.setPaintProperty(
+        'risk-circle',
+        'circle-color',
+        buildColorExpression(activeHazard, activeWeek),
+      );
+    }
   }, [activeHazard, activeWeek, ready]);
 
   // Update selected outline
@@ -272,6 +312,20 @@ function MapViewInner(
         ['==', ['get', 'id'], selectedRegionId ?? ''],
         2,
         0.5,
+      ]);
+    }
+    if (map.getLayer('risk-circle')) {
+      map.setPaintProperty('risk-circle', 'circle-radius', [
+        'case',
+        ['==', ['get', 'id'], selectedRegionId ?? ''],
+        12,
+        8,
+      ]);
+      map.setPaintProperty('risk-circle', 'circle-stroke-width', [
+        'case',
+        ['==', ['get', 'id'], selectedRegionId ?? ''],
+        2.5,
+        1,
       ]);
     }
   }, [selectedRegionId, ready]);

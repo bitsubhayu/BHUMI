@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback, useTransition, useEffect, useRef } from 'react';
+import { useState, useTransition, useEffect, useRef } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Search, ChevronDown, X } from 'lucide-react';
 import type { Region } from '@/lib/forecast/types';

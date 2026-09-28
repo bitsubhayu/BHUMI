@@ -1,8 +1,6 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
-import type { RegionRisk, Hazard, LeadWeek } from '@/lib/forecast/types';
-import { RISK_COLORS, riskKey } from '@/lib/forecast/types';
+
 
 interface HotspotMarkersProps {
   risks: Array<{ id: string; name: string; centroid: [number, number]; probability: number }>;

@@ -54,15 +54,22 @@ export interface ForecastMeta {
   issuedAt: string; // ISO 8601
   validFrom: string; // ISO 8601 — start of "Days 1–7"
   nextUpdateAt: string;
+  isProductionReady?: boolean;
+  modelTier?: 'PRODUCTION' | 'EXPERIMENTAL';
+  trainingCoverage?: {
+    seasonsCount: number;
+    blocksCount: number;
+    samplesGenerated: number;
+  };
 }
 
 export type RegionFeatureProperties = {
   id: string;
   name: string;
-} & Record<string, number | string>;
+} & Record<string, number | string | boolean | null>;
 
 export type RegionFeature = GeoJSON.Feature<
-  GeoJSON.Polygon | GeoJSON.MultiPolygon,
+  GeoJSON.Polygon | GeoJSON.MultiPolygon | GeoJSON.Point,
   RegionFeatureProperties
 >;
 

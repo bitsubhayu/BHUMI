@@ -1,8 +1,7 @@
 'use client';
 
-import { useRef, useEffect, useState } from 'react';
+import { useRef, useEffect } from 'react';
 import type { RegionRisk, Hazard, LeadWeek } from '@/lib/forecast/types';
-import { toBand } from '@/lib/forecast/types';
 import { useT } from '@/lib/i18n/useT';
 
 interface StatChipsProps {

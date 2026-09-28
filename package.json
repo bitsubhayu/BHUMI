@@ -8,7 +8,7 @@
     "start": "next start",
     "lint": "eslint",
     "test": "npm run test:frontend",
-    "test:frontend": "node --experimental-strip-types --test tests/frontend/dashboard.test.mjs",
+    "test:frontend": "node --experimental-strip-types --test tests/frontend/dashboard.test.mjs tests/frontend/supabase-adapter.test.mjs",
     "db:verify": "node scripts/verify_remote.mjs",
     "pipeline:test": "python -m unittest discover -s tests/unit",
     "pipeline:test:unit": "python -m unittest discover -s tests/unit",
