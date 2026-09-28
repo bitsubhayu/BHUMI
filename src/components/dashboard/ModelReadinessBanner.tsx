@@ -19,12 +19,17 @@ export function ModelReadinessBanner({ metadata, lastSyncTime }: ModelReadinessB
 
   const seasonsText = coverage?.seasonsList && coverage.seasonsList.length > 0
     ? coverage.seasonsList.join(', ')
-    : coverage?.seasonsCount
+    : typeof coverage?.seasonsCount === 'number'
     ? `${coverage.seasonsCount} season(s)`
-    : 'Pending ingestion';
+    : '0 seasons';
 
-  const blocksText = coverage?.blocksCount ? `${coverage.blocksCount} blocks` : 'Pending ingestion';
-  const samplesText = coverage?.samplesGenerated ? `${coverage.samplesGenerated} samples` : 'Pending';
+  const blocksText = typeof coverage?.blocksCount === 'number'
+    ? `${coverage.blocksCount} blocks`
+    : '0 blocks';
+
+  const samplesText = typeof coverage?.samplesGenerated === 'number'
+    ? `${coverage.samplesGenerated} samples`
+    : '0 samples';
 
   const displaySync = lastSyncTime
     ? new Date(lastSyncTime).toLocaleDateString('en-IN', {

@@ -25,52 +25,13 @@ import type {
   TeleconnectionsHistoryRow,
 } from './supabase/types';
 
-export interface ModelMetadata {
-  modelVersion: string;
-  modelName: string;
-  trainedAt: string;
-  modelTier: 'PRODUCTION' | 'EXPERIMENTAL';
-  isProductionReady: boolean;
-  readinessStatus: string;
-  reasons: string[];
-  gruStatus: string;
-  trainingCoverage: {
-    seasonsCount: number;
-    seasonsList?: number[];
-    blocksCount: number;
-    samplesGenerated: number;
-    classDistribution: Record<string, number>;
-  };
-}
+import {
+  type ModelMetadata,
+  FALLBACK_MODEL_METADATA,
+  parseModelMetadata,
+} from './metadata';
 
-export const FALLBACK_MODEL_METADATA: ModelMetadata = {
-  modelVersion: 'v1.0.0',
-  modelName: 'BHUMI-Probabilistic-Downscaling-Engine',
-  trainedAt: new Date().toISOString(),
-  modelTier: 'EXPERIMENTAL',
-  isProductionReady: false,
-  readinessStatus: 'INSUFFICIENT_CLASS_DIVERSITY',
-  reasons: [
-    'Archive contains only 1 season(s) (2024); minimum 3 required for multi-year ENSO/IOD cycle validation.',
-    'Archive contains only 2 block(s); minimum 20 required across diverse agro-climatic zones.',
-    'Dataset contains only 96 samples; minimum 1000 required for reliable downscaling.',
-    'Minority classes (Onset, Heavy-Rain) statistically sparse in current historical training archive.',
-    'Stage 1 GRU disabled from production ensemble pending multi-decadal sequence training.',
-  ],
-  gruStatus: 'DISABLED_INSUFFICIENT_TRAINING_DATA (samples=48, required=100)',
-  trainingCoverage: {
-    seasonsCount: 1,
-    seasonsList: [2024],
-    blocksCount: 2,
-    samplesGenerated: 96,
-    classDistribution: {
-      'Active/Normal': 66,
-      'Onset': 4,
-      'Break': 22,
-      'Heavy-Rain': 4,
-    },
-  },
-};
+export * from './metadata';
 
 /**
  * Reads authoritative model readiness metadata from pipeline artifacts.
@@ -82,30 +43,10 @@ export async function getModelMetadata(): Promise<ModelMetadata> {
       const content = await fs.promises.readFile(metaPath, 'utf8');
       const sanitized = content.replace(/:\s*NaN\b/g, ': null');
       const parsed = JSON.parse(sanitized);
-
-      const readiness = parsed.model_readiness || {};
-      const coverage = parsed.training_coverage || {};
-
-      return {
-        modelVersion: parsed.model_version || 'v1.0.0',
-        modelName: parsed.model_name || 'BHUMI Downscaling Engine',
-        trainedAt: parsed.trained_at || new Date().toISOString(),
-        modelTier: parsed.model_tier === 'PRODUCTION' ? 'PRODUCTION' : 'EXPERIMENTAL',
-        isProductionReady: Boolean(readiness.is_production_ready),
-        readinessStatus: readiness.status || 'EXPERIMENTAL',
-        reasons: readiness.reasons || FALLBACK_MODEL_METADATA.reasons,
-        gruStatus: coverage.gru_status || 'DISABLED_INSUFFICIENT_TRAINING_DATA',
-        trainingCoverage: {
-          seasonsCount: coverage.seasons_count || 1,
-          seasonsList: coverage.seasons_list || readiness.archive_summary?.seasons || [2024],
-          blocksCount: coverage.blocks_count || 2,
-          samplesGenerated: coverage.samples_generated || 96,
-          classDistribution: coverage.class_distribution || { '0': 66, '1': 4, '2': 22, '3': 4 },
-        },
-      };
+      return parseModelMetadata(parsed);
     }
   } catch (err) {
-    console.warn('[BHUMI Data] Could not read local metadata.json, using structured fallback:', err);
+    console.warn('[BHUMI Data] Could not read local metadata.json, using neutral fallback:', err);
   }
 
   return FALLBACK_MODEL_METADATA;

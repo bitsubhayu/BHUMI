@@ -2,9 +2,13 @@
  * BHUMI Geospatial & Block Boundary Serialization Utilities
  *
  * Implements safe GeoJSON serialization for MapLibre GL:
- * - Uses authentic PostGIS geometry (Polygon / MultiPolygon) from public.blocks.boundary_geom when present.
- * - If boundary_geom is missing or null, falls back to an authentic Point geometry at the block centroid.
- * - Strictly avoids inventing synthetic administrative bounding boxes.
+ * - Uses authentic PostGIS geometry (Polygon / MultiPolygon) from public.blocks.boundary_geom
+ *   when present as a GeoJSON object or stringified JSON GeoJSON.
+ * - Format Scope: Specifically consumes GeoJSON objects or JSON-encoded GeoJSON strings.
+ *   This implementation does NOT parse raw WKT or EWKT strings.
+ * - Fallback: If boundary_geom is missing, null, non-GeoJSON, or invalid, falls back to an
+ *   authentic Point geometry at the block centroid coordinates [centroid_lon, centroid_lat].
+ * - Administrative Boundary Integrity: Strictly avoids inventing synthetic administrative polygons or bounding boxes.
  */
 
 import type { BlockRow, LivePredictionRow } from './supabase/types';
@@ -47,8 +51,10 @@ export type BlockGeometryResult = {
 
 /**
  * Safely parses and serializes PostGIS boundary geometry if available.
- * If boundary_geom is missing or invalid, falls back to a clearly labeled Point geometry
- * at the block centroid coordinates without inventing synthetic polygons.
+ * Accepts GeoJSON Polygon or MultiPolygon objects or stringified JSON GeoJSON.
+ * Does not parse raw WKT/EWKT strings; unparseable or missing geometries
+ * fall back to a clearly labeled Point geometry at the block centroid coordinates
+ * without inventing synthetic polygons.
  */
 export function resolveBlockGeometry(block: BlockRow): BlockGeometryResult {
   const rawGeom = block.boundary_geom;

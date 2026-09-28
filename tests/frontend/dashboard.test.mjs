@@ -13,6 +13,7 @@ import {
 
 import { derivePanchayatOutlook } from '../../src/lib/panchayat.ts';
 import { resolveBlockGeometry, buildBlockGeoJSON } from '../../src/lib/geo.ts';
+import { parseModelMetadata, FALLBACK_MODEL_METADATA } from '../../src/lib/metadata.ts';
 
 describe('1. Prediction Formatting', () => {
   it('formats normal numeric probabilities with one decimal place', () => {
@@ -312,5 +313,151 @@ describe('6. Authentic Boundary GeoJSON Serialization & Centroid Fallback', () =
     assert.equal(f2.geometry.type, 'Point');
     assert.equal(f2.properties.representation, 'centroid_fallback');
     assert.equal(f2.properties.is_centroid_fallback, true);
+  });
+});
+
+describe('7. Model Metadata Integrity & Zero Preservation', () => {
+  it('preserves legitimate zero values for seasons, blocks, and samples', () => {
+    const zeroMetadata = {
+      model_version: 'v1.0.0',
+      model_name: 'BHUMI-Zero-Test',
+      model_tier: 'EXPERIMENTAL',
+      model_readiness: {
+        status: 'UNAVAILABLE',
+        is_production_ready: false,
+        reasons: ['No historical data ingested.'],
+        archive_summary: {
+          seasons_count: 0,
+          blocks_count: 0,
+          samples_count: 0,
+          seasons: [],
+          class_distribution: {},
+        },
+      },
+      training_coverage: {
+        seasons_count: 0,
+        seasons_list: [],
+        blocks_count: 0,
+        samples_generated: 0,
+        class_distribution: {},
+        gru_status: 'UNAVAILABLE',
+      },
+    };
+
+    const parsed = parseModelMetadata(zeroMetadata);
+
+    // Assert zero is strictly preserved and not overridden by 1, 2, or 96
+    assert.equal(parsed.trainingCoverage.seasonsCount, 0);
+    assert.equal(parsed.trainingCoverage.blocksCount, 0);
+    assert.equal(parsed.trainingCoverage.samplesGenerated, 0);
+    assert.deepEqual(parsed.trainingCoverage.seasonsList, []);
+    assert.deepEqual(parsed.trainingCoverage.classDistribution, {});
+    assert.equal(parsed.readinessStatus, 'UNAVAILABLE');
+    assert.equal(parsed.isProductionReady, false);
+  });
+
+  it('produces neutral UNAVAILABLE values on missing or empty metadata without inventing coverage', () => {
+    // Completely empty metadata object
+    const emptyParsed = parseModelMetadata({});
+
+    assert.equal(emptyParsed.trainingCoverage.seasonsCount, 0);
+    assert.equal(emptyParsed.trainingCoverage.blocksCount, 0);
+    assert.equal(emptyParsed.trainingCoverage.samplesGenerated, 0);
+    assert.deepEqual(emptyParsed.trainingCoverage.seasonsList, []);
+    assert.deepEqual(emptyParsed.trainingCoverage.classDistribution, {});
+    assert.equal(emptyParsed.readinessStatus, 'UNAVAILABLE');
+    assert.equal(emptyParsed.gruStatus, 'UNAVAILABLE');
+    assert.equal(emptyParsed.modelVersion, 'UNAVAILABLE');
+    assert.equal(emptyParsed.isProductionReady, false);
+
+    // Null input
+    const nullParsed = parseModelMetadata(null);
+    assert.equal(nullParsed.trainingCoverage.seasonsCount, 0);
+    assert.equal(nullParsed.trainingCoverage.blocksCount, 0);
+    assert.equal(nullParsed.trainingCoverage.samplesGenerated, 0);
+    assert.deepEqual(nullParsed.trainingCoverage.seasonsList, []);
+
+    // Static fallback constant
+    assert.equal(FALLBACK_MODEL_METADATA.trainingCoverage.seasonsCount, 0);
+    assert.equal(FALLBACK_MODEL_METADATA.trainingCoverage.blocksCount, 0);
+    assert.equal(FALLBACK_MODEL_METADATA.trainingCoverage.samplesGenerated, 0);
+    assert.deepEqual(FALLBACK_MODEL_METADATA.trainingCoverage.seasonsList, []);
+    assert.deepEqual(FALLBACK_MODEL_METADATA.trainingCoverage.classDistribution, {});
+    assert.equal(FALLBACK_MODEL_METADATA.readinessStatus, 'UNAVAILABLE');
+    assert.equal(FALLBACK_MODEL_METADATA.isProductionReady, false);
+  });
+});
+
+describe('8. Geometry Behavior: Authentic PostGIS Boundary or Centroid Point Only', () => {
+  const dummyBlock = {
+    block_id: 'IND_TEST_001',
+    block_name: 'Test Block',
+    district_name: 'Test District',
+    state_name: 'Test State',
+    centroid_lat: 19.12,
+    centroid_lon: 74.56,
+    elevation_m: 500,
+    slope_deg: 1.5,
+    distance_to_coast_km: 150,
+    agro_climatic_zone: 'Zone 1',
+    boundary_geom: null,
+    created_at: '2026-09-28T00:00:00Z',
+    updated_at: '2026-09-28T00:00:00Z',
+  };
+
+  it('parses valid stringified JSON MultiPolygon geometry accurately', () => {
+    const multiPolygonJson = JSON.stringify({
+      type: 'MultiPolygon',
+      coordinates: [
+        [
+          [
+            [74.5, 19.1],
+            [74.6, 19.1],
+            [74.6, 19.2],
+            [74.5, 19.2],
+            [74.5, 19.1],
+          ],
+        ],
+      ],
+    });
+
+    const blockWithMulti = { ...dummyBlock, boundary_geom: multiPolygonJson };
+    const res = resolveBlockGeometry(blockWithMulti);
+
+    assert.equal(res.geometry.type, 'MultiPolygon');
+    assert.equal(res.representation, 'boundary_polygon');
+    assert.equal(res.isCentroidFallback, false);
+  });
+
+  it('safely falls back to centroid Point when geometry is raw WKT or unsupported format without inventing polygons', () => {
+    // Raw WKT string that is not JSON
+    const blockWithWkt = {
+      ...dummyBlock,
+      boundary_geom: 'POLYGON((74.5 19.1, 74.6 19.1, 74.6 19.2, 74.5 19.2, 74.5 19.1))',
+    };
+    const res = resolveBlockGeometry(blockWithWkt);
+
+    assert.equal(res.geometry.type, 'Point');
+    assert.deepEqual(res.geometry.coordinates, [74.56, 19.12]);
+    assert.equal(res.representation, 'centroid_fallback');
+    assert.equal(res.isCentroidFallback, true);
+  });
+
+  it('safely falls back to centroid Point when boundary_geom is null or undefined without bounding box fabrication', () => {
+    const blockNull = { ...dummyBlock, boundary_geom: null };
+    const resNull = resolveBlockGeometry(blockNull);
+
+    assert.equal(resNull.geometry.type, 'Point');
+    assert.deepEqual(resNull.geometry.coordinates, [74.56, 19.12]);
+    assert.equal(resNull.representation, 'centroid_fallback');
+    assert.equal(resNull.isCentroidFallback, true);
+
+    const blockUndefined = { ...dummyBlock, boundary_geom: undefined };
+    const resUndefined = resolveBlockGeometry(blockUndefined);
+
+    assert.equal(resUndefined.geometry.type, 'Point');
+    assert.deepEqual(resUndefined.geometry.coordinates, [74.56, 19.12]);
+    assert.equal(resUndefined.representation, 'centroid_fallback');
+    assert.equal(resUndefined.isCentroidFallback, true);
   });
 });
