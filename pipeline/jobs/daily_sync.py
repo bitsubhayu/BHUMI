@@ -72,7 +72,7 @@ REPRESENTATIVE_BLOCKS = [
 
 
 def get_active_blocks(config: Any, sample_only: bool = False) -> list[dict[str, Any]]:
-    """Retrieve blocks from Supabase or fail clearly in production.
+    """Retrieve blocks from Supabase with robust pagination or fail clearly in production.
 
     In production mode (sample_only=False), failure to retrieve blocks from Supabase
     raises a RuntimeError rather than silently falling back to sample blocks.
@@ -86,35 +86,14 @@ def get_active_blocks(config: Any, sample_only: bool = False) -> list[dict[str, 
             "Pass --sample-only to run on representative sample blocks."
         )
 
-    url = config.supabase_url.rstrip("/")
-    headers = {
-        "apikey": config.supabase_service_role_key,
-        "Authorization": f"Bearer {config.supabase_service_role_key}",
-    }
-    try:
-        resp = requests.get(
-            f"{url}/rest/v1/blocks?select=block_id,block_name,district_name,state_name,centroid_lat,centroid_lon,elevation_m,slope_deg",
-            headers=headers,
-            timeout=15,
-        )
-        if resp.status_code == 200:
-            blocks = resp.json()
-            if blocks and len(blocks) > 0:
-                return blocks
-            raise RuntimeError(
-                "Supabase returned an empty public.blocks table for production run. "
-                "Register administrative blocks or pass --sample-only for sample execution."
-            )
-        else:
-            raise RuntimeError(
-                f"Failed to fetch production blocks from Supabase (HTTP {resp.status_code}: {resp.text[:200]}). "
-                f"Pass --sample-only for sample execution."
-            )
-    except requests.RequestException as e:
-        raise RuntimeError(
-            f"Network error querying production blocks from Supabase: {e}. "
-            f"Pass --sample-only for sample execution."
-        )
+    loader = SupabaseLoader(config=config)
+    blocks = loader.fetch_blocks()
+    if blocks and len(blocks) > 0:
+        return blocks
+    raise RuntimeError(
+        "Supabase returned an empty public.blocks table for production run. "
+        "Register administrative blocks or pass --sample-only for sample execution."
+    )
 
 
 def run_daily_sync(
@@ -257,33 +236,25 @@ def run_daily_sync(
     logger.info("Step 3: Pruning live_weather_buffer records older than 90 days...")
     pruned_count = loader.prune_live_buffer_older_than(days=config.live_buffer_retention_days)
     logger.info(f"[OK] Buffer retention enforced (prune operation status: {pruned_count})")
+    logger.info("DATA SYNC SUCCESS: Teleconnections and live weather buffer successfully updated and pruned.")
 
-    # 4. Step 4: ML Forecasting & Inference Engine
-    logger.info("Step 4: Executing BHUMI probabilistic forecasting engine...")
+    # 4. Step 4: ML Forecasting & Prediction Inference Sync
+    logger.info("Step 4: Executing BHUMI prediction inference sync via predict_sync entry point...")
     try:
-        from pipeline.ml.inference import ProductionInferenceEngine
-        engine = ProductionInferenceEngine(config=config, dry_run=dry_run)
+        from pipeline.jobs.predict_sync import run_predict_sync
         target_block_ids = [b["block_id"] for b in blocks]
-        inf_result = engine.run_inference(
+        inf_result = run_predict_sync(
             as_of_date=str(today),
+            dry_run=dry_run,
             block_ids=target_block_ids,
             allow_experimental=allow_experimental,
         )
-        if not inf_result.get("success", False):
-            logger.warning(
-                f"[GATE] Live inference blocked by Model Readiness Gate: {inf_result.get('error')}. "
-                f"Model readiness: {inf_result.get('readiness_status')}. "
-                f"No unvalidated ML predictions written to public.live_predictions."
-            )
-        else:
-            logger.info(
-                f"[OK] Live inference successful: {inf_result['predictions_count']} predictions "
-                f"for {inf_result['blocks_processed']} blocks written to public.live_predictions "
-                f"(tier: {inf_result.get('model_tier')}, analog year: {inf_result.get('teleconnection_analog_year')})"
-            )
+        if not inf_result.get("success", False) and inf_result.get("status") != "BLOCKED_BY_READINESS_GATE":
+            logger.error(f"PIPELINE FAILURE: Prediction sync did not complete successfully: {inf_result.get('error')}")
+            return 1
     except Exception as e:
-        logger.error(f"[ERROR] Inference engine execution failed: {e}", exc_info=True)
-        logger.warning("Existing live_predictions rows preserved without corruption.")
+        logger.error(f"PIPELINE FAILURE: Inference execution failed: {e}", exc_info=True)
+        return 1
 
     duration = time.time() - start_time
     logger.info("=" * 64)

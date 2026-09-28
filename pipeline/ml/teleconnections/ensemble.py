@@ -113,7 +113,7 @@ class TeleconnectionEnsemble:
         )
 
         analog_probs = self.analog_model.predict_lead_probabilities(current_state, exclude_year=exclude_year)
-        analog_year = self.analog_model.get_dominant_analog_year(current_state)
+        analog_year = self.analog_model.get_dominant_analog_year(current_state, exclude_year=exclude_year)
         analogs = self.analog_model.find_analogs(current_state, exclude_year=exclude_year)
 
         # 2. GRU sequence preparation only if GRU is trained and enabled

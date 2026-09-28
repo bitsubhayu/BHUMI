@@ -113,6 +113,8 @@ class EcmwfAdapter(BaseSourceAdapter):
         # Parse GRIB2 using eccodes
         all_temps: list[float] = []
         all_precips: list[float] = []
+        valid_dates: set[str] = set()
+        target_str = target_date.strftime("%Y%m%d")
 
         with open(cache_file, "rb") as f:
             while True:
@@ -121,6 +123,16 @@ class EcmwfAdapter(BaseSourceAdapter):
                     break
                 try:
                     sname = eccodes.codes_get(gid, "shortName")
+                    try:
+                        vdate = str(eccodes.codes_get(gid, "validityDate"))
+                    except Exception:
+                        try:
+                            vdate = str(eccodes.codes_get(gid, "dataDate"))
+                        except Exception:
+                            vdate = ""
+                    if vdate:
+                        valid_dates.add(vdate)
+
                     nearest = eccodes.codes_grib_find_nearest(gid, lat, lon)
                     if nearest and len(nearest) > 0:
                         val = float(nearest[0]["value"])
@@ -130,6 +142,11 @@ class EcmwfAdapter(BaseSourceAdapter):
                             all_precips.append(val)
                 finally:
                     eccodes.codes_release(gid)
+
+        if valid_dates and target_str not in valid_dates:
+            raise ValueError(
+                f"Direct ECMWF Open Data GRIB valid dates {valid_dates} do not match requested target_date {target_date}"
+            )
 
         if not all_temps:
             raise ValueError(f"ECMWF GRIB missing 2m temperature ('2t') for ({lat}, {lon})")
@@ -151,6 +168,8 @@ class EcmwfAdapter(BaseSourceAdapter):
         )
 
         return {
+            "target_date": str(target_date),
+            "valid_date": str(target_date),
             "rainfall_mm": rain_mm,
             "max_temp_c": max_t,
             "min_temp_c": min_t,
@@ -187,9 +206,11 @@ class EcmwfAdapter(BaseSourceAdapter):
         precips = daily.get("precipitation_sum", [])
 
         target_str = str(target_date)
-        idx = 0
-        if target_str in times:
-            idx = times.index(target_str)
+        if target_str not in times:
+            raise ValueError(
+                f"Requested target_date {target_date} not found in ECMWF fallback forecast dates: {times}"
+            )
+        idx = times.index(target_str)
 
         if idx >= len(max_temps) or max_temps[idx] is None:
             raise ValueError(f"ECMWF forecast missing max temperature for date {target_date}")
@@ -208,6 +229,8 @@ class EcmwfAdapter(BaseSourceAdapter):
         )
 
         return {
+            "target_date": target_str,
+            "valid_date": target_str,
             "rainfall_mm": round(max(0.0, rain), 2),
             "max_temp_c": round(max_t, 2),
             "min_temp_c": round(min_t, 2),

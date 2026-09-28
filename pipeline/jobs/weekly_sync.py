@@ -72,35 +72,14 @@ def get_active_blocks(config: Any, sample_only: bool = False) -> list[dict[str, 
             "Pass --sample-only to run on representative sample blocks."
         )
 
-    url = config.supabase_url.rstrip("/")
-    headers = {
-        "apikey": config.supabase_service_role_key,
-        "Authorization": f"Bearer {config.supabase_service_role_key}",
-    }
-    try:
-        resp = requests.get(
-            f"{url}/rest/v1/blocks?select=block_id,block_name,district_name,state_name,centroid_lat,centroid_lon,elevation_m,slope_deg",
-            headers=headers,
-            timeout=15,
-        )
-        if resp.status_code == 200:
-            blocks = resp.json()
-            if blocks and len(blocks) > 0:
-                return blocks
-            raise RuntimeError(
-                "Supabase returned an empty public.blocks table for production run. "
-                "Register administrative blocks or pass --sample-only for sample execution."
-            )
-        else:
-            raise RuntimeError(
-                f"Failed to fetch production blocks from Supabase (HTTP {resp.status_code}: {resp.text[:200]}). "
-                f"Pass --sample-only for sample execution."
-            )
-    except requests.RequestException as e:
-        raise RuntimeError(
-            f"Network error querying production blocks from Supabase: {e}. "
-            f"Pass --sample-only for sample execution."
-        )
+    loader = SupabaseLoader(config=config)
+    blocks = loader.fetch_blocks()
+    if blocks and len(blocks) > 0:
+        return blocks
+    raise RuntimeError(
+        "Supabase returned an empty public.blocks table for production run. "
+        "Register administrative blocks or pass --sample-only for sample execution."
+    )
 
 
 def run_weekly_sync(

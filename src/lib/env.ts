@@ -14,9 +14,6 @@ export interface PublicClientEnv {
 
 export interface ServerEnv extends PublicClientEnv {
   supabaseServiceRoleKey: string | undefined;
-  bhashiniApiKey: string | undefined;
-  bhashiniUserId: string | undefined;
-  bhashiniPipelineId: string | undefined;
 }
 
 /**
@@ -50,9 +47,6 @@ export function getServerEnv(): ServerEnv {
   return {
     ...publicEnv,
     supabaseServiceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY?.trim(),
-    bhashiniApiKey: process.env.BHASHINI_API_KEY?.trim(),
-    bhashiniUserId: process.env.BHASHINI_USER_ID?.trim(),
-    bhashiniPipelineId: process.env.BHASHINI_PIPELINE_ID?.trim(),
   };
 }
 

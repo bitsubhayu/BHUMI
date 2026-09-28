@@ -115,7 +115,13 @@ export function FilterCascade({ onBoundsChange }: FilterCascadeProps) {
   function handleSearchSelect(region: Region) {
     setQuery('');
     setSearchOpen(false);
-    updateParam('block', region.id);
+    if (region.level === 'state') {
+      updateParam('state', region.id, ['district', 'block']);
+    } else if (region.level === 'district') {
+      updateParam('district', region.id, ['block']);
+    } else {
+      updateParam('block', region.id);
+    }
     onBoundsChange?.(region.bbox);
   }
 

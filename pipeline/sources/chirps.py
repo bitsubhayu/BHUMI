@@ -112,6 +112,8 @@ class ChirpsAdapter(BaseSourceAdapter):
             num_days = sample_days if sample_days is not None else len(dates)
 
             rainfall_series: list[float] = []
+            missing_dates: list[str] = []
+
             for idx, d in enumerate(dates[:num_days]):
                 try:
                     arr = self.fetch_daily_raster(d)
@@ -119,12 +121,23 @@ class ChirpsAdapter(BaseSourceAdapter):
                     rainfall_series.append(val)
                 except Exception as e:
                     self.logger.warning(f"Could not fetch CHIRPS raster for {d}: {e}")
-                    rainfall_series.append(0.0)
+                    missing_dates.append(str(d))
 
-            # Pad if sample_days was requested
-            while len(rainfall_series) < 214:
-                rainfall_series.append(0.0)
+            if missing_dates:
+                raise RuntimeError(
+                    f"CHIRPS rainfall incomplete for year {year}: {len(missing_dates)} missing dates ({', '.join(missing_dates[:5])}...)"
+                )
+
+            if sample_days is not None:
+                # Explicit sample mode requested for testing with limited days
+                return rainfall_series
+
+            if len(rainfall_series) != 214:
+                raise RuntimeError(
+                    f"CHIRPS seasonal window incomplete: expected 214 days, got {len(rainfall_series)}"
+                )
 
             return rainfall_series
 
         return self.safe_execute(f"fetch_seasonal_window ({year})", _fetch)
+

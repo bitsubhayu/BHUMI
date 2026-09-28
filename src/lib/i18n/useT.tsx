@@ -49,19 +49,49 @@ const I18nContext = createContext<I18nContextValue>({
   messages: null,
 });
 
+export function resolveInitialLocale(urlSearch?: string, cookieHeader?: string): Locale {
+  const validLocales: Locale[] = ['en', 'hi', 'bn'];
+  if (urlSearch) {
+    try {
+      const search = urlSearch.startsWith('?') ? urlSearch : `?${urlSearch}`;
+      const params = new URLSearchParams(search);
+      const param = params.get('lang') as Locale | null;
+      if (param && validLocales.includes(param)) {
+        return param;
+      }
+    } catch {
+      // ignore parsing errors
+    }
+  }
+  if (cookieHeader) {
+    try {
+      const cookieLocale = cookieHeader
+        .split('; ')
+        .find((r) => r.startsWith('bhumi_lang='))
+        ?.split('=')[1] as Locale | undefined;
+      if (cookieLocale && validLocales.includes(cookieLocale)) {
+        return cookieLocale;
+      }
+    } catch {
+      // ignore cookie parsing errors
+    }
+  }
+  return 'en';
+}
+
 export function I18nProvider({ children }: { children: React.ReactNode }) {
   const [locale, setLocaleState] = useState<Locale>('en');
   const [messages, setMessages] = useState<Record<string, unknown> | null>(null);
 
   useEffect(() => {
-    // Read from cookie or URL param on mount — deferred to avoid cascade
+    // Read from URL param (precedence 1) or cookie (precedence 2) or default en
     queueMicrotask(() => {
-      const cookieLocale = document.cookie
-        .split('; ')
-        .find((r) => r.startsWith('bhumi_lang='))
-        ?.split('=')[1] as Locale | undefined;
-      if (cookieLocale && ['en', 'hi', 'bn'].includes(cookieLocale)) {
-        setLocaleState(cookieLocale);
+      const urlSearch = typeof window !== 'undefined' ? window.location.search : '';
+      const cookieStr = typeof document !== 'undefined' ? document.cookie : '';
+      const resolved = resolveInitialLocale(urlSearch, cookieStr);
+      setLocaleState(resolved);
+      if (typeof document !== 'undefined') {
+        document.cookie = `bhumi_lang=${resolved}; path=/; max-age=31536000; SameSite=Lax`;
       }
     });
   }, []);

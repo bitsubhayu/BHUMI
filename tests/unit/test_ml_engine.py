@@ -123,6 +123,8 @@ class TestMLEngine(unittest.TestCase):
             lagged_soil=[50.0] * 7,
             lagged_states=[2] * 14,
             lead_week=2,
+            climatology_mean=8.5,
+            climatology_std=12.0,
         )
 
         self.assertEqual(len(vec), len(FEATURE_NAMES))
@@ -332,6 +334,14 @@ class TestMLEngine(unittest.TestCase):
         engine.loader.fetch_teleconnections_history = MagicMock(return_value=[
             {"observation_date": f"2026-09-{i:02d}", "enso_oni": -0.6, "iod_dmi": -0.4, "mjo_phase": 3, "mjo_amplitude": 1.5}
             for i in range(1, 29)
+        ])
+        # Provide authentic historical seasonal archive for block climatology derivation
+        engine.loader.fetch_seasonal_archives = MagicMock(return_value=[
+            {
+                "block_id": "IND_MH_PUN_001",
+                "season_year": 2024,
+                "rainfall_x10": [20] * 214,
+            }
         ])
         # Provide authentic 8-day observation buffer so minimum history requirement (7 days) is satisfied
         engine.loader.fetch_live_weather_buffer = MagicMock(return_value=[

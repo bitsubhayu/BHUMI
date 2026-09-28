@@ -91,3 +91,49 @@ def classify_monsoon_states(
                     state_codes[k] = 3
 
     return state_codes
+
+
+def classify_recent_observation_states(
+    dates: Sequence[datetime.date | str],
+    rainfall_mm: Sequence[float],
+) -> list[int]:
+    """Classify an arbitrary sequence of recent daily observations into weather state codes (0 to 4).
+    
+    Maintains exact consistency with authoritative IMD / NCMRWF classification criteria:
+      - 4: Heavy rainfall (>= 64.5 mm)
+      - 2: Active spell (>= 15.0 mm)
+      - 3: Break spell (>= 3 consecutive days with rain < 2.5 mm)
+      - 0: Normal / light rainfall
+    """
+    n = len(rainfall_mm)
+    if n == 0:
+        return []
+
+    state_codes = [0] * n
+    for i in range(n):
+        if rainfall_mm[i] >= 64.5:
+            state_codes[i] = 4
+        elif rainfall_mm[i] >= 15.0:
+            state_codes[i] = 2
+
+    # Break detection (>= 3 consecutive days < 2.5 mm)
+    dry_spell_start = -1
+    for i in range(n):
+        if rainfall_mm[i] < 2.5:
+            if dry_spell_start == -1:
+                dry_spell_start = i
+        else:
+            if dry_spell_start != -1:
+                if i - dry_spell_start >= 3:
+                    for k in range(dry_spell_start, i):
+                        if state_codes[k] == 0:
+                            state_codes[k] = 3
+                dry_spell_start = -1
+
+    if dry_spell_start != -1 and (n - dry_spell_start) >= 3:
+        for k in range(dry_spell_start, n):
+            if state_codes[k] == 0:
+                state_codes[k] = 3
+
+    return state_codes
+

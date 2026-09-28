@@ -39,16 +39,19 @@ class SeasonalModelTrainer:
         self,
         config: Optional[PipelineConfig] = None,
         artifacts_dir: Optional[Path] = None,
+        dry_run: bool = False,
     ) -> None:
         self.config = config or get_pipeline_config()
         self.artifacts_dir = artifacts_dir or Path(__file__).resolve().parent / "artifacts"
-        self.artifacts_dir.mkdir(parents=True, exist_ok=True)
+        self.dry_run = dry_run
+        if not self.dry_run:
+            self.artifacts_dir.mkdir(parents=True, exist_ok=True)
         self.logger = get_logger("bhumi.ml.trainer")
-        self.loader = SupabaseLoader(config=self.config)
+        self.loader = SupabaseLoader(config=self.config, dry_run=dry_run)
 
     def train_and_evaluate(self) -> dict[str, Any]:
         """Execute full training and evaluation pass against available real historical data."""
-        self.logger.info("Starting seasonal training and rolling validation cycle...")
+        self.logger.info(f"Starting seasonal training and rolling validation cycle (dry_run={self.dry_run})...")
 
         # 1. Fetch data from Supabase
         blocks = self.loader.fetch_blocks()
@@ -58,9 +61,12 @@ class SeasonalModelTrainer:
         telecons = self.loader.fetch_teleconnections_history()
         telecon_by_date = {str(t["observation_date"]): t for t in telecons}
 
+        unique_blocks = {a["block_id"] for a in archives if a.get("block_id")}
+        unique_blocks_count = len(unique_blocks)
+
         self.logger.info(
-            f"Fetched {len(blocks)} blocks, {len(archives)} seasonal archives, "
-            f"and {len(telecons)} teleconnection records from Supabase"
+            f"Fetched {len(blocks)} blocks ({unique_blocks_count} distinct in archives), "
+            f"{len(archives)} seasonal archives, and {len(telecons)} teleconnection records from Supabase"
         )
 
         # 2. Extract features and sequences
@@ -102,7 +108,7 @@ class SeasonalModelTrainer:
 
         readiness = ModelReadinessEvaluator.evaluate(
             seasons=distinct_seasons,
-            blocks_count=len(archives),
+            blocks_count=unique_blocks_count,
             samples_count=n_samples,
             class_counts=class_counts,
             test_class_counts=test_class_counts,
@@ -160,11 +166,6 @@ class SeasonalModelTrainer:
                 f"ECE={metrics.get('expected_calibration_error')}, LogLoss={metrics.get('log_loss')}"
             )
 
-        # 6. Save versioned artifacts to pipeline/ml/artifacts/
-        downscaling_ensemble.save(self.artifacts_dir)
-        calibrator.save(self.artifacts_dir / "calibrator.json")
-        telecon_ensemble.gru_model.save(self.artifacts_dir / "gru_weights.json")
-
         metadata = {
             "model_version": "v1.0.0",
             "model_name": "BHUMI-Probabilistic-Downscaling-Engine",
@@ -174,7 +175,7 @@ class SeasonalModelTrainer:
             "training_coverage": {
                 "seasons_count": len(distinct_seasons),
                 "seasons_list": distinct_seasons,
-                "blocks_count": len(archives),
+                "blocks_count": unique_blocks_count,
                 "samples_generated": n_samples,
                 "class_distribution": class_counts,
                 "gru_sequences_count": len(X_gru),
@@ -192,6 +193,16 @@ class SeasonalModelTrainer:
             "calibration_version": "v1-time-respecting",
             "validation_metrics": metrics,
         }
+
+        if self.dry_run:
+            self.logger.info("Dry-run mode active: completely skipping artifact serialization to disk.")
+            metadata["dry_run"] = True
+            return metadata
+
+        # 6. Save versioned artifacts to pipeline/ml/artifacts/
+        downscaling_ensemble.save(self.artifacts_dir)
+        calibrator.save(self.artifacts_dir / "calibrator.json")
+        telecon_ensemble.gru_model.save(self.artifacts_dir / "gru_weights.json")
 
         with open(self.artifacts_dir / "metadata.json", "w", encoding="utf-8") as f:
             json.dump(metadata, f, indent=2)

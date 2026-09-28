@@ -285,14 +285,22 @@ class AnalogEnsembleModel:
                 state_weights = {0: 0.0, 1: 0.0, 2: 0.0, 3: 0.0}
                 total_w = 0.0
 
+                # Target 4-class prediction:
+                # Class 0: Active / Normal (source 0: Normal, 2: Active)
+                # Class 1: Onset (source 1: Onset)
+                # Class 2: Break (source 3: Break)
+                # Class 3: Heavy (source 4: Heavy)
+                target_class_map = {0: 0, 1: 1, 2: 0, 3: 2, 4: 3}
+
                 for arch in matching_archives:
                     yr = int(arch["season_year"])
                     sim_w = analog_years.get(yr, 1.0)
                     states = arch.get("weather_state_code", [])
                     window = states[start_day:end_day]
                     for s in window:
-                        if 0 <= s <= 3:
-                            state_weights[s] += sim_w
+                        if s in target_class_map:
+                            t_cls = target_class_map[s]
+                            state_weights[t_cls] += sim_w
                             total_w += sim_w
 
                 if total_w > 0:
@@ -376,7 +384,11 @@ class AnalogEnsembleModel:
 
         return output
 
-    def get_dominant_analog_year(self, current_state: np.ndarray) -> Optional[int]:
-        """Return the closest historical analog year."""
-        analogs = self.find_analogs(current_state, top_k=1)
+    def get_dominant_analog_year(
+        self,
+        current_state: np.ndarray,
+        exclude_year: Optional[int] = None,
+    ) -> Optional[int]:
+        """Return the closest historical analog year, excluding the specified year."""
+        analogs = self.find_analogs(current_state, exclude_year=exclude_year, top_k=1)
         return analogs[0].year if analogs else None

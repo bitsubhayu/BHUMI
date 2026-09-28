@@ -54,7 +54,7 @@ export async function getModelMetadata(): Promise<ModelMetadata> {
 
 
 /**
- * Fetches all registered administrative blocks from public.blocks.
+ * Fetches all registered administrative blocks from public.blocks with robust pagination.
  */
 export async function getBlocks(): Promise<BlockRow[]> {
   const supabase = getSupabaseServerClient(false);
@@ -63,19 +63,37 @@ export async function getBlocks(): Promise<BlockRow[]> {
   }
 
   try {
-    const { data, error } = await supabase
-      .from('blocks')
-      .select('*')
-      .order('state_name', { ascending: true })
-      .order('district_name', { ascending: true })
-      .order('block_name', { ascending: true });
+    const allBlocks: BlockRow[] = [];
+    const pageSize = 1000;
+    let offset = 0;
 
-    if (error) {
-      console.warn('[BHUMI Data] Failed to query public.blocks:', error.message);
-      return [];
+    while (true) {
+      const { data, error } = await supabase
+        .from('blocks')
+        .select('*')
+        .order('state_name', { ascending: true })
+        .order('district_name', { ascending: true })
+        .order('block_name', { ascending: true })
+        .range(offset, offset + pageSize - 1);
+
+      if (error) {
+        console.warn('[BHUMI Data] Failed to query public.blocks:', error.message);
+        if (offset === 0) return [];
+        throw error;
+      }
+
+      if (!data || data.length === 0) {
+        break;
+      }
+
+      allBlocks.push(...(data as BlockRow[]));
+      if (data.length < pageSize) {
+        break;
+      }
+      offset += data.length;
     }
 
-    return (data as BlockRow[]) || [];
+    return allBlocks;
   } catch (err) {
     console.warn('[BHUMI Data] Exception querying blocks:', err);
     return [];
@@ -83,7 +101,7 @@ export async function getBlocks(): Promise<BlockRow[]> {
 }
 
 /**
- * Fetches latest predictions from public.live_predictions.
+ * Fetches latest predictions from public.live_predictions for the current prediction cycle.
  */
 export async function getLivePredictions(blockId?: string): Promise<LivePredictionRow[]> {
   const supabase = getSupabaseServerClient(false);
@@ -92,23 +110,53 @@ export async function getLivePredictions(blockId?: string): Promise<LivePredicti
   }
 
   try {
-    let query = supabase
+    // 1. Find the latest prediction_date to scope the query and prevent fetching all historical rows
+    const { data: latestDateData } = await supabase
       .from('live_predictions')
-      .select('*')
+      .select('prediction_date')
       .order('prediction_date', { ascending: false })
-      .order('lead_time_bucket', { ascending: true });
+      .limit(1);
 
-    if (blockId) {
-      query = query.eq('block_id', blockId);
+    const latestDate = (latestDateData as Array<{ prediction_date: string }> | null)?.[0]?.prediction_date;
+
+    const allPredictions: LivePredictionRow[] = [];
+    const pageSize = 1000;
+    let offset = 0;
+
+    while (true) {
+      let query = supabase
+        .from('live_predictions')
+        .select('*')
+        .order('prediction_date', { ascending: false })
+        .order('lead_time_bucket', { ascending: true });
+
+      if (latestDate) {
+        query = query.eq('prediction_date', latestDate);
+      }
+
+      if (blockId) {
+        query = query.eq('block_id', blockId);
+      }
+
+      const { data, error } = await query.range(offset, offset + pageSize - 1);
+      if (error) {
+        console.warn('[BHUMI Data] Failed to query public.live_predictions:', error.message);
+        if (offset === 0) return [];
+        throw error;
+      }
+
+      if (!data || data.length === 0) {
+        break;
+      }
+
+      allPredictions.push(...(data as LivePredictionRow[]));
+      if (data.length < pageSize) {
+        break;
+      }
+      offset += data.length;
     }
 
-    const { data, error } = await query;
-    if (error) {
-      console.warn('[BHUMI Data] Failed to query public.live_predictions:', error.message);
-      return [];
-    }
-
-    return (data as LivePredictionRow[]) || [];
+    return allPredictions;
   } catch (err) {
     console.warn('[BHUMI Data] Exception querying live_predictions:', err);
     return [];

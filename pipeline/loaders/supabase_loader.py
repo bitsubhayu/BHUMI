@@ -145,115 +145,184 @@ class SupabaseLoader:
         valid_records = [validate_live_prediction(r) for r in records]
         return self._execute_upsert("live_predictions", valid_records)
 
-    def fetch_blocks(self) -> list[dict[str, Any]]:
-        """Fetch all administrative blocks with centroid and terrain features."""
-        endpoint = f"{self.config.supabase_url.rstrip('/')}/rest/v1/blocks?select=block_id,block_name,district_name,state_name,centroid_lat,centroid_lon,elevation_m,slope_deg,distance_to_coast_km,agro_climatic_zone"
-        headers = {
+    def _fetch_paginated(
+        self,
+        table: str,
+        select: str,
+        filters: Optional[list[str]] = None,
+        order: Optional[str] = None,
+        page_size: int = 1000,
+        max_rows: Optional[int] = None,
+    ) -> list[dict[str, Any]]:
+        """Fetch all rows from a PostgREST table using robust HTTP Range pagination."""
+        all_rows: list[dict[str, Any]] = []
+        offset = 0
+
+        filter_str = ("&" + "&".join(filters)) if filters else ""
+        order_str = f"&order={order}" if order else ""
+
+        headers_base = {
             "apikey": self.config.supabase_service_role_key,
             "Authorization": f"Bearer {self.config.supabase_service_role_key}",
-            "Range": "0-9999",
+            "Range-Unit": "items",
+            "Prefer": "count=exact",
         }
-        try:
-            resp = requests.get(endpoint, headers=headers, timeout=self.config.request_timeout_seconds)
-            if resp.status_code == 200:
-                return resp.json()
-            self.logger.warning(f"Failed to fetch blocks: HTTP {resp.status_code}")
-            return []
-        except Exception as e:
-            self.logger.error(f"Error fetching blocks: {e}")
-            return []
+
+        while True:
+            limit_this_page = page_size
+            if max_rows is not None:
+                remaining = max_rows - len(all_rows)
+                if remaining <= 0:
+                    break
+                limit_this_page = min(page_size, remaining)
+
+            range_start = offset
+            range_end = offset + limit_this_page - 1
+            headers = {
+                **headers_base,
+                "Range": f"{range_start}-{range_end}",
+            }
+
+            url = f"{self.config.supabase_url.rstrip('/')}/rest/v1/{table}?select={select}{filter_str}{order_str}"
+
+            try:
+                resp = requests.get(url, headers=headers, timeout=self.config.request_timeout_seconds)
+                if resp.status_code not in (200, 206):
+                    if offset == 0:
+                        self.logger.warning(f"Failed to fetch {table}: HTTP {resp.status_code} ({resp.text[:200]})")
+                        return []
+                    raise RuntimeError(
+                        f"PostgREST pagination failed for {table} at offset {offset}: "
+                        f"HTTP {resp.status_code} {resp.text[:200]}"
+                    )
+
+                data = resp.json()
+                if not isinstance(data, list) or len(data) == 0:
+                    break
+
+                all_rows.extend(data)
+
+                content_range = resp.headers.get("Content-Range") or resp.headers.get("content-range")
+                if content_range and "/" in content_range:
+                    _, total_str = content_range.split("/", 1)
+                    if total_str.strip() != "*":
+                        try:
+                            total_count = int(total_str.strip())
+                            if len(all_rows) >= total_count:
+                                break
+                        except ValueError:
+                            pass
+
+                if len(data) < limit_this_page:
+                    break
+
+                offset += len(data)
+            except Exception as e:
+                if offset > 0:
+                    self.logger.error(f"Error during pagination of {table} at offset {offset}: {e}")
+                    raise
+                self.logger.error(f"Error fetching {table}: {e}")
+                return []
+
+        return all_rows
+
+    def fetch_blocks(self) -> list[dict[str, Any]]:
+        """Fetch all administrative blocks with centroid and terrain features using full pagination."""
+        return self._fetch_paginated(
+            table="blocks",
+            select="block_id,block_name,district_name,state_name,centroid_lat,centroid_lon,elevation_m,slope_deg,distance_to_coast_km,agro_climatic_zone",
+            order="state_name.asc,district_name.asc,block_name.asc",
+        )
 
     def fetch_seasonal_archives(self, block_ids: Optional[list[str]] = None) -> list[dict[str, Any]]:
-        """Fetch seasonal archive records (214-day arrays)."""
-        base = f"{self.config.supabase_url.rstrip('/')}/rest/v1/seasonal_archives?select=id,block_id,season_year,season_start_date,season_end_date,rainfall_x10,max_temp_x10,soil_moisture_idx,weather_state_code"
-        if block_ids:
-            # PostgREST in filter: block_id=in.(id1,id2)
-            joined = ",".join(block_ids)
-            endpoint = f"{base}&block_id=in.({joined})"
-        else:
-            endpoint = base
+        """Fetch seasonal archive records (214-day arrays) with pagination and chunked filtering."""
+        select_cols = "id,block_id,season_year,season_start_date,season_end_date,rainfall_x10,max_temp_x10,soil_moisture_idx,weather_state_code"
+        if not block_ids:
+            return self._fetch_paginated(
+                table="seasonal_archives",
+                select=select_cols,
+                order="season_year.asc,block_id.asc",
+            )
 
-        headers = {
-            "apikey": self.config.supabase_service_role_key,
-            "Authorization": f"Bearer {self.config.supabase_service_role_key}",
-            "Range": "0-9999",
-        }
-        try:
-            resp = requests.get(endpoint, headers=headers, timeout=self.config.request_timeout_seconds)
-            if resp.status_code == 200:
-                return resp.json()
-            self.logger.warning(f"Failed to fetch seasonal archives: HTTP {resp.status_code}")
-            return []
-        except Exception as e:
-            self.logger.error(f"Error fetching seasonal archives: {e}")
-            return []
+        # Chunk block_ids to stay well within URL length limits
+        chunk_size = 50
+        all_archives: list[dict[str, Any]] = []
+        for i in range(0, len(block_ids), chunk_size):
+            chunk = block_ids[i : i + chunk_size]
+            joined = ",".join(chunk)
+            chunk_results = self._fetch_paginated(
+                table="seasonal_archives",
+                select=select_cols,
+                filters=[f"block_id=in.({joined})"],
+                order="season_year.asc,block_id.asc",
+            )
+            all_archives.extend(chunk_results)
+
+        return all_archives
 
     def fetch_teleconnections_history(self, limit: Optional[int] = None) -> list[dict[str, Any]]:
         """Fetch teleconnections timeseries ordered by observation_date."""
-        endpoint = f"{self.config.supabase_url.rstrip('/')}/rest/v1/teleconnections_history?select=observation_date,enso_oni,iod_dmi,mjo_phase,mjo_amplitude,source_agency&order=observation_date.asc"
+        select_cols = "observation_date,enso_oni,iod_dmi,mjo_phase,mjo_amplitude,source_agency"
         if limit:
-            endpoint = f"{self.config.supabase_url.rstrip('/')}/rest/v1/teleconnections_history?select=observation_date,enso_oni,iod_dmi,mjo_phase,mjo_amplitude,source_agency&order=observation_date.desc&limit={limit}"
+            data = self._fetch_paginated(
+                table="teleconnections_history",
+                select=select_cols,
+                order="observation_date.desc",
+                max_rows=limit,
+            )
+            return sorted(data, key=lambda x: str(x.get("observation_date", "")))
 
-        headers = {
-            "apikey": self.config.supabase_service_role_key,
-            "Authorization": f"Bearer {self.config.supabase_service_role_key}",
-            "Range": "0-9999",
-        }
-        try:
-            resp = requests.get(endpoint, headers=headers, timeout=self.config.request_timeout_seconds)
-            if resp.status_code == 200:
-                data = resp.json()
-                if limit:
-                    data = sorted(data, key=lambda x: x["observation_date"])
-                return data
-            self.logger.warning(f"Failed to fetch teleconnections: HTTP {resp.status_code}")
-            return []
-        except Exception as e:
-            self.logger.error(f"Error fetching teleconnections: {e}")
-            return []
+        return self._fetch_paginated(
+            table="teleconnections_history",
+            select=select_cols,
+            order="observation_date.asc",
+        )
 
-    def fetch_live_weather_buffer(self, block_ids: Optional[list[str]] = None, days: int = 30) -> list[dict[str, Any]]:
-        """Fetch recent observations from live_weather_buffer."""
-        endpoint = f"{self.config.supabase_url.rstrip('/')}/rest/v1/live_weather_buffer?select=block_id,observation_date,rainfall_mm,max_temp_c,min_temp_c,soil_moisture_idx,data_source&order=observation_date.desc&limit=500"
-        if block_ids:
-            joined = ",".join(block_ids)
-            endpoint = f"{endpoint}&block_id=in.({joined})"
+    def fetch_live_weather_buffer(
+        self,
+        block_ids: Optional[list[str]] = None,
+        days: int = 30,
+    ) -> list[dict[str, Any]]:
+        """Fetch recent observations from live_weather_buffer with genuine date window and pagination."""
+        cutoff_date = (time.strftime("%Y-%m-%d", time.gmtime(time.time() - days * 86400)))
+        select_cols = "block_id,observation_date,rainfall_mm,max_temp_c,min_temp_c,soil_moisture_idx,data_source"
 
-        headers = {
-            "apikey": self.config.supabase_service_role_key,
-            "Authorization": f"Bearer {self.config.supabase_service_role_key}",
-            "Range": "0-9999",
-        }
-        try:
-            resp = requests.get(endpoint, headers=headers, timeout=self.config.request_timeout_seconds)
-            if resp.status_code == 200:
-                return resp.json()
-            self.logger.warning(f"Failed to fetch live weather buffer: HTTP {resp.status_code}")
-            return []
-        except Exception as e:
-            self.logger.error(f"Error fetching live weather buffer: {e}")
-            return []
+        if not block_ids:
+            return self._fetch_paginated(
+                table="live_weather_buffer",
+                select=select_cols,
+                filters=[f"observation_date=gte.{cutoff_date}"],
+                order="observation_date.asc,block_id.asc",
+            )
+
+        chunk_size = 50
+        all_buffer: list[dict[str, Any]] = []
+        for i in range(0, len(block_ids), chunk_size):
+            chunk = block_ids[i : i + chunk_size]
+            joined = ",".join(chunk)
+            chunk_results = self._fetch_paginated(
+                table="live_weather_buffer",
+                select=select_cols,
+                filters=[
+                    f"observation_date=gte.{cutoff_date}",
+                    f"block_id=in.({joined})",
+                ],
+                order="observation_date.asc,block_id.asc",
+            )
+            all_buffer.extend(chunk_results)
+
+        return all_buffer
 
     def fetch_live_predictions(self, prediction_date: Optional[str] = None) -> list[dict[str, Any]]:
-        """Fetch predictions from public.live_predictions."""
-        endpoint = f"{self.config.supabase_url.rstrip('/')}/rest/v1/live_predictions?select=id,block_id,prediction_date,lead_time_bucket,onset_probability,break_probability,heavy_spell_probability,calibrated_confidence,primary_driver,secondary_driver,teleconnection_analog_year,advisory_code&order=prediction_date.desc,block_id.asc,lead_time_bucket.asc"
-        if prediction_date:
-            endpoint = f"{endpoint}&prediction_date=eq.{prediction_date}"
-
-        headers = {
-            "apikey": self.config.supabase_service_role_key,
-            "Authorization": f"Bearer {self.config.supabase_service_role_key}",
-            "Range": "0-9999",
-        }
-        try:
-            resp = requests.get(endpoint, headers=headers, timeout=self.config.request_timeout_seconds)
-            if resp.status_code == 200:
-                return resp.json()
-            self.logger.warning(f"Failed to fetch live predictions: HTTP {resp.status_code}")
-            return []
-        except Exception as e:
-            self.logger.error(f"Error fetching live predictions: {e}")
-            return []
+        """Fetch predictions from public.live_predictions with full pagination."""
+        select_cols = "id,block_id,prediction_date,lead_time_bucket,onset_probability,break_probability,heavy_spell_probability,calibrated_confidence,primary_driver,secondary_driver,teleconnection_analog_year,advisory_code"
+        filters = [f"prediction_date=eq.{prediction_date}"] if prediction_date else None
+        return self._fetch_paginated(
+            table="live_predictions",
+            select=select_cols,
+            filters=filters,
+            order="prediction_date.desc,block_id.asc,lead_time_bucket.asc",
+        )
 
     def prune_live_buffer_older_than(self, days: int = 90) -> int:
         """Prune observations from live_weather_buffer older than the retention window."""
@@ -278,4 +347,29 @@ class SupabaseLoader:
                 return 0
         except Exception as e:
             self.logger.error(f"Error pruning live_weather_buffer: {e}")
+            return 0
+
+    def prune_live_predictions_older_than(self, days: int = 60) -> int:
+        """Prune historical predictions from live_predictions older than the retention window."""
+        if self.dry_run:
+            self.logger.info(f"[DRY-RUN] Pruning prediction records older than {days} days from live_predictions")
+            return 0
+
+        cutoff = (time.strftime("%Y-%m-%d", time.gmtime(time.time() - days * 86400)))
+        endpoint = f"{self.config.supabase_url.rstrip('/')}/rest/v1/live_predictions?prediction_date=lt.{cutoff}"
+        headers = {
+            "apikey": self.config.supabase_service_role_key,
+            "Authorization": f"Bearer {self.config.supabase_service_role_key}",
+        }
+
+        try:
+            resp = requests.delete(endpoint, headers=headers, timeout=self.config.request_timeout_seconds)
+            if resp.status_code in (200, 204):
+                self.logger.info(f"Pruned live_predictions records older than {cutoff}")
+                return 1
+            else:
+                self.logger.warning(f"Prune live_predictions returned HTTP {resp.status_code}: {resp.text[:200]}")
+                return 0
+        except Exception as e:
+            self.logger.error(f"Error pruning live_predictions: {e}")
             return 0

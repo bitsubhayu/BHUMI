@@ -32,7 +32,7 @@ def main() -> None:
     logger.info("Initializing BHUMI Seasonal Retraining Job...")
 
     config = get_pipeline_config()
-    trainer = SeasonalModelTrainer(config=config)
+    trainer = SeasonalModelTrainer(config=config, dry_run=args.dry_run)
 
     try:
         metadata = trainer.train_and_evaluate()

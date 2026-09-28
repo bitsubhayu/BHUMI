@@ -30,7 +30,7 @@ export function ArchitectureOverview() {
       title: '₹0 Sustainable Operating Cost',
       subtitle: 'Free & Public Infrastructure (TECH_STACK.md §8)',
       description:
-        'Vercel Hobby + Supabase 500MB + GitHub Actions + MapLibre/OSM + Bhashini API. Entire architecture runs at zero recurring cost, making long-term government deployment viable.',
+        'Vercel Hobby + Supabase 500MB + GitHub Actions + MapLibre/OSM + Static Multilingual Engine. Entire architecture runs at zero recurring cost, making long-term government deployment viable.',
       icon: GitBranch,
     },
   ];

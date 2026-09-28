@@ -24,6 +24,8 @@ jobs:
     name: Execute Seasonal Offline Model Retraining
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    permissions:
+      contents: write
     env:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
@@ -31,6 +33,8 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
@@ -54,6 +58,42 @@ jobs:
             EXTRA_ARGS="--dry-run"
           fi
           python -m pipeline.jobs.retrain_models $EXTRA_ARGS
+
+      - name: Validate Generated Artifacts
+        if: ${{ inputs.dry_run != true }}
+        run: |
+          python -c "
+          import json
+          from pathlib import Path
+          from pipeline.ml.downscaling.classifiers import DownscalingEnsemble
+          from pipeline.ml.calibration.calibrator import ProbabilityCalibrator
+
+          art_dir = Path('pipeline/ml/artifacts')
+          meta_file = art_dir / 'metadata.json'
+          assert meta_file.exists(), 'metadata.json missing'
+          with open(meta_file, 'r', encoding='utf-8') as f:
+              meta = json.load(f)
+          assert 'model_version' in meta, 'model_version missing'
+          assert 'trained_at' in meta, 'trained_at missing'
+          assert 'model_readiness' in meta, 'model_readiness missing'
+
+          DownscalingEnsemble.load(art_dir)
+          ProbabilityCalibrator.load(art_dir / 'calibrator.json')
+          print('Artifact validation succeeded: version =', meta['model_version'])
+          "
+
+      - name: Commit and Publish Authoritative Artifacts to Repository
+        if: ${{ inputs.dry_run != true }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add pipeline/ml/artifacts/
+          if git diff --staged --quiet; then
+            echo "No changes in model artifacts to commit."
+          else
+            git commit -m "chore(ml): update authoritative seasonal model artifacts [skip ci]"
+            git push origin main
+          fi
 
       - name: Upload Trained Model Artifacts
         uses: actions/upload-artifact@v4

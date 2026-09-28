@@ -47,22 +47,40 @@ export const ALL_STEP6_LOCALES: Locale[] = [
   'or',
 ];
 
-// In-memory cache
+// In-memory cache with independent timestamps per dataset
 let cachedBlocks: BlockRow[] | null = null;
 let cachedPredictions: LivePredictionRow[] | null = null;
 let cachedRules: AdvisoryRuleRow[] | null = null;
 let cachedMetadata: ModelMetadata | null = null;
-let lastFetchTime = 0;
+
+let lastBlocksFetch = 0;
+let lastPredictionsFetch = 0;
+let lastRulesFetch = 0;
 let lastMetaFetch = 0;
-const CACHE_TTL_MS = 60_000; // 1 minute
+
+export const BLOCKS_CACHE_TTL_MS = 60_000; // 1 minute
+export const PREDICTIONS_CACHE_TTL_MS = 60_000; // 1 minute
+export const RULES_CACHE_TTL_MS = 60_000; // 1 minute intentional refresh policy
+export const METADATA_CACHE_TTL_MS = 60_000; // 1 minute
 
 export function clearSupabaseAdapterCache(): void {
   cachedBlocks = null;
   cachedPredictions = null;
   cachedRules = null;
   cachedMetadata = null;
-  lastFetchTime = 0;
+  lastBlocksFetch = 0;
+  lastPredictionsFetch = 0;
+  lastRulesFetch = 0;
   lastMetaFetch = 0;
+}
+
+export function getCacheTimestamps() {
+  return {
+    lastBlocksFetch,
+    lastPredictionsFetch,
+    lastRulesFetch,
+    lastMetaFetch,
+  };
 }
 
 /**
@@ -72,7 +90,7 @@ export function clearSupabaseAdapterCache(): void {
  */
 export async function fetchAuthoritativeMetadata(): Promise<ModelMetadata> {
   const now = Date.now();
-  if (cachedMetadata && now - lastMetaFetch < CACHE_TTL_MS) {
+  if (cachedMetadata && now - lastMetaFetch < METADATA_CACHE_TTL_MS) {
     return cachedMetadata;
   }
 
@@ -95,40 +113,90 @@ export async function fetchAuthoritativeMetadata(): Promise<ModelMetadata> {
   return FALLBACK_MODEL_METADATA;
 }
 
-async function fetchPostgrest<T>(path: string): Promise<T[]> {
+export async function fetchPostgrest<T>(path: string, pageSize = 1000): Promise<T[]> {
   const { supabaseUrl, supabaseAnonKey, isConfigured } = getPublicEnv();
   if (!isConfigured || !supabaseUrl || !supabaseAnonKey) {
     return [];
   }
 
   const cleanUrl = supabaseUrl.replace(/\/+$/, '');
-  const url = `${cleanUrl}/rest/v1/${path}`;
+  const allRows: T[] = [];
+  let offset = 0;
+  const isSinglePage = path.includes('limit=') || pageSize <= 1;
 
-  try {
-    const res = await fetch(url, {
-      method: 'GET',
-      headers: {
-        apikey: supabaseAnonKey,
-        Authorization: `Bearer ${supabaseAnonKey}`,
-        Accept: 'application/json',
-      },
-    });
+  while (true) {
+    const rangeStart = offset;
+    const rangeEnd = offset + pageSize - 1;
+    const url = `${cleanUrl}/rest/v1/${path}`;
 
-    if (!res.ok) {
-      console.warn(`[BHUMI Supabase Adapter] Fetch failed for ${path}: ${res.statusText}`);
+    try {
+      const res = await fetch(url, {
+        method: 'GET',
+        headers: {
+          apikey: supabaseAnonKey,
+          Authorization: `Bearer ${supabaseAnonKey}`,
+          Accept: 'application/json',
+          Range: `${rangeStart}-${rangeEnd}`,
+          'Range-Unit': 'items',
+          Prefer: 'count=exact',
+        },
+      });
+
+      if (!res.ok && res.status !== 206) {
+        if (offset === 0) {
+          console.warn(`[BHUMI Supabase Adapter] Fetch failed for ${path}: ${res.statusText}`);
+          return [];
+        }
+        throw new Error(`Pagination failed for ${path} at offset ${offset}: HTTP ${res.status} ${res.statusText}`);
+      }
+
+      const rows = (await res.json()) as T[];
+      if (!Array.isArray(rows) || rows.length === 0) {
+        break;
+      }
+
+      allRows.push(...rows);
+
+      // If single-page query or server returned full 200 OK without 206 Partial Content
+      if (isSinglePage || res.status === 200) {
+        break;
+      }
+
+      // Check Content-Range header (e.g., "0-999/6700")
+      const contentRange = res.headers?.get
+        ? res.headers.get('content-range') || res.headers.get('Content-Range')
+        : null;
+      if (contentRange) {
+        const parts = contentRange.split('/');
+        if (parts.length === 2 && parts[1] !== '*') {
+          const totalCount = parseInt(parts[1], 10);
+          if (!isNaN(totalCount) && allRows.length >= totalCount) {
+            break;
+          }
+        }
+      }
+
+      if (rows.length < pageSize) {
+        break;
+      }
+
+      offset += rows.length;
+    } catch (err) {
+      if (offset > 0) {
+        console.error(`[BHUMI Supabase Adapter] Pagination error querying ${path}:`, err);
+        throw err;
+      }
+      console.warn(`[BHUMI Supabase Adapter] Network error querying ${path}:`, err);
       return [];
     }
-
-    return (await res.json()) as T[];
-  } catch (err) {
-    console.warn(`[BHUMI Supabase Adapter] Network error querying ${path}:`, err);
-    return [];
   }
+
+  return allRows;
 }
 
 async function getCachedBlocks(): Promise<BlockRow[]> {
   const now = Date.now();
-  if (cachedBlocks && now - lastFetchTime < CACHE_TTL_MS) {
+  if (cachedBlocks && now - lastBlocksFetch < BLOCKS_CACHE_TTL_MS) {
     return cachedBlocks;
   }
   const rows = await fetchPostgrest<BlockRow>(
@@ -136,27 +204,39 @@ async function getCachedBlocks(): Promise<BlockRow[]> {
   );
   if (rows.length > 0) {
     cachedBlocks = rows;
-    lastFetchTime = now;
+    lastBlocksFetch = now;
   }
   return cachedBlocks ?? [];
 }
 
 async function getCachedPredictions(): Promise<LivePredictionRow[]> {
   const now = Date.now();
-  if (cachedPredictions && now - lastFetchTime < CACHE_TTL_MS) {
+  if (cachedPredictions && now - lastPredictionsFetch < PREDICTIONS_CACHE_TTL_MS) {
     return cachedPredictions;
   }
-  const rows = await fetchPostgrest<LivePredictionRow>(
-    'live_predictions?select=*&order=prediction_date.desc,lead_time_bucket.asc'
+
+  // To protect browser memory and network performance, find the latest prediction_date first
+  const latestDateRows = await fetchPostgrest<{ prediction_date: string }>(
+    'live_predictions?select=prediction_date&order=prediction_date.desc&limit=1'
   );
+
+  let queryPath = 'live_predictions?select=*&order=prediction_date.desc,lead_time_bucket.asc';
+  if (latestDateRows.length > 0 && latestDateRows[0].prediction_date) {
+    const latestDate = latestDateRows[0].prediction_date;
+    queryPath = `live_predictions?select=*&prediction_date=eq.${latestDate}&order=lead_time_bucket.asc,block_id.asc`;
+  }
+
+  const rows = await fetchPostgrest<LivePredictionRow>(queryPath);
   if (rows.length > 0) {
     cachedPredictions = rows;
+    lastPredictionsFetch = now;
   }
   return cachedPredictions ?? [];
 }
 
 async function getCachedRules(): Promise<AdvisoryRuleRow[]> {
-  if (cachedRules && cachedRules.length > 0) {
+  const now = Date.now();
+  if (cachedRules && cachedRules.length > 0 && now - lastRulesFetch < RULES_CACHE_TTL_MS) {
     return cachedRules;
   }
   const rows = await fetchPostgrest<AdvisoryRuleRow>(
@@ -164,6 +244,7 @@ async function getCachedRules(): Promise<AdvisoryRuleRow[]> {
   );
   if (rows.length > 0) {
     cachedRules = rows;
+    lastRulesFetch = now;
     return cachedRules;
   }
   return VERIFIED_ADVISORY_RULES;

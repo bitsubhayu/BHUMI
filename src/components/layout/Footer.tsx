@@ -56,7 +56,7 @@ export function Footer() {
             </li>
             <li>
               <Link href="#architecture" className="hover:text-foreground transition-colors">
-                Bhashini Translation Delivery
+                Static Multilingual Advisory Engine
               </Link>
             </li>
           </ul>

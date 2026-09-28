@@ -28,6 +28,7 @@ from pipeline.ml.downscaling.classifiers import DownscalingEnsemble
 from pipeline.ml.downscaling.features import FeatureExtractor, MissingFeatureError
 from pipeline.ml.explainability.driver_attribution import DriverAttributionEngine
 from pipeline.ml.teleconnections.ensemble import TeleconnectionEnsemble
+from pipeline.transforms.weather_state import classify_recent_observation_states
 from pipeline.utils.config import PipelineConfig, get_pipeline_config
 from pipeline.utils.logger import get_logger
 
@@ -144,6 +145,7 @@ class ProductionInferenceEngine:
             blocks = all_blocks
 
         self.logger.info(f"Found {len(blocks)} registered administrative blocks to evaluate")
+        current_year = int(today.split("-")[0]) if "-" in today else datetime.date.today().year
 
         # 3. Teleconnection state & trajectory retrieval
         telecon_history = self.loader.fetch_teleconnections_history(limit=60)
@@ -151,12 +153,21 @@ class ProductionInferenceEngine:
             raise RuntimeError("Production inference aborted: teleconnections_history is empty in Supabase.")
 
         self.telecon_ensemble.fit(telecon_history)
-        telecon_pred = self.telecon_ensemble.predict(telecon_history)
+        telecon_pred = self.telecon_ensemble.predict(telecon_history, exclude_year=current_year)
 
         analog_year = telecon_pred.get("analog_year")
         latest_telecon = telecon_history[-1]
 
-        # 4. Fetch recent observations from live_weather_buffer
+        # 4. Fetch historical seasonal archives for climatology derivation (prior completed seasons)
+        candidate_ids = [b["block_id"] for b in blocks]
+        seasonal_archives = self.loader.fetch_seasonal_archives(block_ids=candidate_ids if block_ids else None)
+        archives_by_block: dict[str, list[dict[str, Any]]] = {}
+        for a in seasonal_archives:
+            archives_by_block.setdefault(a["block_id"], []).append(a)
+
+        climatology_cache: dict[str, tuple[float, float]] = {}
+
+        # 5. Fetch recent observations from live_weather_buffer
         live_buffer = self.loader.fetch_live_weather_buffer(days=30)
         obs_by_block: dict[str, list[dict[str, Any]]] = {}
         for obs in live_buffer:
@@ -166,9 +177,31 @@ class ProductionInferenceEngine:
         prediction_records: list[dict[str, Any]] = []
         skipped_blocks: list[dict[str, str]] = []
 
-        # 5. Evaluate predictions per block and lead week
+        # 6. Evaluate predictions per block and lead week
         for block in blocks:
             b_id = block["block_id"]
+
+            # Derive or fetch cached block climatology from genuine prior seasons
+            if b_id in climatology_cache:
+                clim_mean, clim_std = climatology_cache[b_id]
+            else:
+                block_archs = archives_by_block.get(b_id, [])
+                hist_rains = [
+                    r / 10.0
+                    for a in block_archs
+                    if int(a.get("season_year", 0)) < current_year
+                    for r in (a.get("rainfall_x10") or [])
+                ]
+                if hist_rains:
+                    clim_mean = float(np.mean(hist_rains))
+                    clim_std = float(np.std(hist_rains)) + 1e-4
+                    climatology_cache[b_id] = (clim_mean, clim_std)
+                else:
+                    msg = f"No historical seasonal archives prior to {current_year} found to derive real climatology"
+                    self.logger.warning(f"Skipping block '{b_id}': {msg}. Rejecting prediction on missing climatology.")
+                    skipped_blocks.append({"block_id": b_id, "reason": msg})
+                    continue
+
             block_obs = sorted(obs_by_block.get(b_id, []), key=lambda x: str(x.get("observation_date", "")))
 
             # Extract genuine observations
@@ -176,6 +209,9 @@ class ProductionInferenceEngine:
             temp_series = [float(o.get("max_temp_c") or 0.0) for o in block_obs]
             soil_series = [float(o.get("soil_moisture_idx") or 0.0) for o in block_obs]
             dates_series = [str(o.get("observation_date", today)) for o in block_obs]
+
+            # Derive recent weather state codes from genuine observation window
+            derived_states = classify_recent_observation_states(dates_series, rain_series)
 
             # Detect change-points if enough history exists
             cp_onset = ChangePointDetector.detect_onset_transition(rain_series, dates_series, soil_series)
@@ -198,8 +234,10 @@ class ProductionInferenceEngine:
                         lagged_rain=rain_series,
                         lagged_temp=temp_series,
                         lagged_soil=soil_series,
-                        lagged_states=[],
+                        lagged_states=derived_states,
                         lead_week=lead_w,
+                        climatology_mean=clim_mean,
+                        climatology_std=clim_std,
                         min_history_days=1 if allow_experimental else 7,
                     )
                 except MissingFeatureError as e:

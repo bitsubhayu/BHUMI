@@ -44,21 +44,21 @@ class PipelineConfig:
     """Pipeline runtime configuration."""
 
     # Supabase (Database & PostGIS)
-    supabase_url: str
-    supabase_service_role_key: str
-    supabase_anon_key: Optional[str]
+    supabase_url: str = ""
+    supabase_service_role_key: str = ""
+    supabase_anon_key: Optional[str] = None
 
     # Copernicus Climate Data Store (ERA5 / ERA5-Land)
-    cdsapi_url: Optional[str]
-    cdsapi_key: Optional[str]
+    cdsapi_url: Optional[str] = None
+    cdsapi_key: Optional[str] = None
 
     # NASA Earthdata (GPM IMERG, SMAP)
-    earthdata_username: Optional[str]
-    earthdata_password: Optional[str]
+    earthdata_username: Optional[str] = None
+    earthdata_password: Optional[str] = None
 
     # IMD Pune (Gridded observations - registration required)
-    imd_api_key: Optional[str]
-    imd_pune_user: Optional[str]
+    imd_api_key: Optional[str] = None
+    imd_pune_user: Optional[str] = None
 
     # Ingestion Parameters & Storage Constraints
     # TECH_STACK.md §3 Recommendation: 12 seasons (2014-2025) occupies ~145 MB,

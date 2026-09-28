@@ -78,7 +78,7 @@ jobs:
           print('=' * 60)
           "
 
-      - name: Execute Daily Live Synchronization
+      - name: Execute Daily Live Synchronization and Prediction
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
@@ -94,9 +94,11 @@ jobs:
           if [ "${{ inputs.sample_only }}" = "true" ]; then
             EXTRA_ARGS="$EXTRA_ARGS --sample-only"
           fi
-          if [ "${{ inputs.allow_experimental }}" = "true" ]; then
+          # NEVER allow experimental in scheduled cron runs; only allowed on manual dispatch when explicitly chosen
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.allow_experimental }}" = "true" ]; then
             EXTRA_ARGS="$EXTRA_ARGS --allow-experimental"
           fi
           DAYS="${{ inputs.days || '7' }}"
-          
+
+          echo "Starting daily operational pipeline..."
           python -m pipeline.jobs.daily_sync --days "$DAYS" $EXTRA_ARGS

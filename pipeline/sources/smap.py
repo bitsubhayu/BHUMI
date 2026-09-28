@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import datetime
 import io
+import time
 from typing import Any, Optional
 
 import h5py
@@ -33,6 +34,7 @@ class SmapAdapter(BaseSourceAdapter):
         super().__init__(*args, **kwargs)
         self._bearer_token: Optional[str] = None
         self._granule_cache: dict[datetime.date, dict[str, np.ndarray]] = {}
+        self._cmr_cache: dict[datetime.date, Optional[tuple[str, str]]] = {}
 
     @property
     def name(self) -> str:
@@ -89,6 +91,9 @@ class SmapAdapter(BaseSourceAdapter):
         if not self.is_configured:
             return None
 
+        if target_date in self._cmr_cache:
+            return self._cmr_cache[target_date]
+
         params = {
             "short_name": self.COLLECTION_SHORT_NAME,
             "temporal": f"{target_date}T00:00:00Z,{target_date}T23:59:59Z",
@@ -98,6 +103,7 @@ class SmapAdapter(BaseSourceAdapter):
             resp = self.request_with_retry("GET", self.CMR_SEARCH_URL, params=params, timeout=15)
             entries = resp.json().get("feed", {}).get("entry", [])
             if not entries:
+                self._cmr_cache[target_date] = None
                 return None
 
             entry = entries[0]
@@ -106,8 +112,11 @@ class SmapAdapter(BaseSourceAdapter):
             for link in entry.get("links", []):
                 href = link.get("href", "")
                 if href.endswith(".h5") and not link.get("inherited", False):
-                    return title, href
+                    res = (title, href)
+                    self._cmr_cache[target_date] = res
+                    return res
 
+            self._cmr_cache[target_date] = None
             return None
         except Exception as e:
             self.logger.error(f"SMAP CMR query error: {e}")

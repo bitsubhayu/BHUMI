@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import datetime
 import io
+import time
 from typing import Any, Optional
 
 import h5py
@@ -33,6 +34,7 @@ class GpmImergAdapter(BaseSourceAdapter):
         super().__init__(*args, **kwargs)
         self._bearer_token: Optional[str] = None
         self._gpm_cache: dict[datetime.date, np.ndarray] = {}
+        self._cmr_cache: dict[tuple[datetime.date, bool], list[str]] = {}
 
     @property
     def name(self) -> str:
@@ -89,6 +91,10 @@ class GpmImergAdapter(BaseSourceAdapter):
         if not self.is_configured:
             return []
 
+        cache_key = (target_date, is_early_run)
+        if cache_key in self._cmr_cache:
+            return self._cmr_cache[cache_key]
+
         collection = "GPM_3IMERGDL" if is_early_run else "GPM_3IMERGDF"
         params = {
             "short_name": collection,
@@ -104,6 +110,7 @@ class GpmImergAdapter(BaseSourceAdapter):
                     href = link.get("href", "")
                     if href.endswith(".nc4") and not link.get("inherited", False):
                         urls.append(href)
+            self._cmr_cache[cache_key] = urls
             return urls
         except Exception as e:
             self.logger.error(f"GPM CMR search failed: {e}")
@@ -117,7 +124,14 @@ class GpmImergAdapter(BaseSourceAdapter):
         lat: float,
         lon: float,
     ) -> float:
-        """Download genuine GPM IMERG NetCDF4/HDF5 granule and extract rainfall."""
+        """Download genuine GPM IMERG NetCDF4/HDF5 granule and extract rainfall, caching grid per date."""
+        if target_date in self._gpm_cache:
+            grid = self._gpm_cache[target_date]
+            lon_idx = max(0, min(3599, int(round((lon + 179.95) / 0.1))))
+            lat_idx = max(0, min(1799, int(round((lat + 89.95) / 0.1))))
+            val = float(grid[lon_idx, lat_idx])
+            return round(max(0.0, val), 2)
+
         self.logger.info(f"Downloading authentic NASA GPM IMERG granule from {granule_url}...")
         headers = {"Authorization": f"Bearer {token}"}
         resp = requests.get(granule_url, headers=headers, timeout=45)
@@ -130,17 +144,19 @@ class GpmImergAdapter(BaseSourceAdapter):
         elif resp.status_code != 200:
             raise RuntimeError(f"NASA GES DISC download returned HTTP {resp.status_code}: {resp.text[:200]}")
 
-        rain_mm = self.extract_point_from_nc4_bytes(resp.content, lat, lon)
+        grid = self.extract_grid_from_nc4_bytes(resp.content)
+        if len(self._gpm_cache) > 5:
+            del self._gpm_cache[next(iter(self._gpm_cache))]
+        self._gpm_cache[target_date] = grid
+
+        lon_idx = max(0, min(3599, int(round((lon + 179.95) / 0.1))))
+        lat_idx = max(0, min(1799, int(round((lat + 89.95) / 0.1))))
+        rain_mm = round(float(grid[lon_idx, lat_idx]), 2)
         self.logger.info(f"Extracted real GPM IMERG precipitation for ({lat:.2f}, {lon:.2f}) on {target_date}: {rain_mm} mm")
         return rain_mm
 
-    def extract_point_from_nc4_bytes(
-        self,
-        nc4_bytes: bytes,
-        lat: float,
-        lon: float,
-    ) -> float:
-        """Parse authentic GPM IMERG NetCDF4/HDF5 bytes and extract rainfall."""
+    def extract_grid_from_nc4_bytes(self, nc4_bytes: bytes) -> np.ndarray:
+        """Parse authentic GPM IMERG NetCDF4/HDF5 bytes and extract 2D precipitation grid."""
         with h5py.File(io.BytesIO(nc4_bytes), "r") as f:
             if "Grid" not in f:
                 raise ValueError("Invalid GPM IMERG granule: Missing 'Grid' group")
@@ -152,18 +168,21 @@ class GpmImergAdapter(BaseSourceAdapter):
 
             # GPM grid shape: (1, 3600, 1800) or (3600, 1800) -> (time, lon, lat)
             ds = grid_group[var_name]
-            lon_idx = max(0, min(3599, int(round((lon + 179.95) / 0.1))))
-            lat_idx = max(0, min(1799, int(round((lat + 89.95) / 0.1))))
+            grid = np.array(ds[0] if ds.ndim == 3 else ds, dtype=np.float32)
+            grid[grid < 0.0] = 0.0
+            return grid
 
-            if ds.ndim == 3:
-                val = float(ds[0, lon_idx, lat_idx])
-            else:
-                val = float(ds[lon_idx, lat_idx])
-
-            if val < 0.0:  # Fill value
-                val = 0.0
-
-            return round(val, 2)
+    def extract_point_from_nc4_bytes(
+        self,
+        nc4_bytes: bytes,
+        lat: float,
+        lon: float,
+    ) -> float:
+        """Parse authentic GPM IMERG NetCDF4/HDF5 bytes and extract rainfall."""
+        grid = self.extract_grid_from_nc4_bytes(nc4_bytes)
+        lon_idx = max(0, min(3599, int(round((lon + 179.95) / 0.1))))
+        lat_idx = max(0, min(1799, int(round((lat + 89.95) / 0.1))))
+        return round(float(grid[lon_idx, lat_idx]), 2)
 
     def fetch_daily_precipitation(
         self,

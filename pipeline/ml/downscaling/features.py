@@ -68,8 +68,8 @@ class FeatureExtractor:
         lagged_soil: Sequence[float],
         lagged_states: Sequence[int],
         lead_week: int,
-        climatology_mean: float = 8.5,
-        climatology_std: float = 12.0,
+        climatology_mean: Optional[float] = None,
+        climatology_std: Optional[float] = None,
         min_history_days: int = 7,
     ) -> np.ndarray:
         """Extract a single feature vector without silent default fallbacks.
@@ -78,6 +78,7 @@ class FeatureExtractor:
           - Valid block terrain features (lat, lon, elevation, slope, coast distance)
           - Valid teleconnection index state (ONI, DMI, MJO phase, amplitude)
           - Minimum observation history (at least min_history_days of rain, temp, and soil moisture)
+          - Explicit block-specific climatology mean and standard deviation
         
         Raises:
             MissingFeatureError: If any required feature or observation window is missing.
@@ -144,7 +145,14 @@ class FeatureExtractor:
         a_break = float(analog_signals.get("break", 0.25))
         a_heavy = float(analog_signals.get("heavy", 0.10))
 
-        # 4. Strict Observation History Minimum Requirements (No silent 32°C / 45% moisture defaults)
+        # 4. Strict Block Climatology Validation (No hardcoded production defaults)
+        if climatology_mean is None or climatology_std is None:
+            raise MissingFeatureError(
+                f"Block '{block_id}' is missing required real climatology statistics (mean/std). "
+                f"BHUMI rejects predictions without authentic historical block climatology."
+            )
+
+        # 5. Strict Observation History Minimum Requirements
         if len(lagged_rain) < min_history_days:
             raise MissingFeatureError(
                 f"Block '{block_id}' has insufficient rainfall observation history: "
@@ -161,7 +169,7 @@ class FeatureExtractor:
                 f"got {len(lagged_soil)} days, minimum required is {min_history_days} days."
             )
 
-        # 5. Extract strict lag statistics
+        # 6. Extract strict lag statistics
         rain_arr = np.asarray(lagged_rain, dtype=np.float64)
         rain_1d = float(rain_arr[-1])
         rain_3d = float(np.sum(rain_arr[-3:])) if len(rain_arr) >= 3 else float(np.sum(rain_arr)) * (3 / len(rain_arr))
@@ -221,6 +229,9 @@ class FeatureExtractor:
     ) -> tuple[np.ndarray, np.ndarray, list[dict[str, Any]], np.ndarray, np.ndarray]:
         """Generate training dataset from seasonal archives without lookahead leakage.
         
+        Climatology is strictly derived from prior completed seasons (year < current_year)
+        or strictly historical observations prior to timestamp t (no future days in current season).
+        
         Returns:
             X_tabular: (N, 26) feature matrix for LightGBM/XGBoost
             y_tabular: (N,) target classes [0: Active, 1: Onset, 2: Break, 3: Heavy]
@@ -237,6 +248,15 @@ class FeatureExtractor:
 
         # Sort dates for continuous sequence extraction
         sorted_telecon_dates = sorted(telecon_by_date.keys())
+
+        # Index all archives by block_id and year for lookahead-free historical climatology
+        archives_by_block: dict[str, dict[int, list[float]]] = {}
+        for arch in seasonal_archives:
+            b_id = arch.get("block_id")
+            yr = int(arch.get("season_year", 0))
+            rs = [r / 10.0 for r in (arch.get("rainfall_x10") or [])]
+            if b_id and len(rs) == 214:
+                archives_by_block.setdefault(b_id, {})[yr] = rs
 
         for arch in seasonal_archives:
             block_id = arch["block_id"]
@@ -255,8 +275,17 @@ class FeatureExtractor:
             if len(rain_series) != 214 or len(state_series) != 214:
                 continue
 
-            clim_mean = float(np.mean(rain_series))
-            clim_std = float(np.std(rain_series)) + 1e-4
+            # Check for prior completed seasons to calculate genuine historical climatology
+            prior_rains = [
+                val
+                for y_p, r_series in archives_by_block.get(block_id, {}).items()
+                if y_p < year
+                for val in r_series
+            ]
+            has_prior_history = len(prior_rains) > 0
+            if has_prior_history:
+                block_prior_mean = float(np.mean(prior_rains))
+                block_prior_std = float(np.std(prior_rains)) + 1e-4
 
             for t in range(20, 186, sample_step):
                 obs_date = start_date + datetime.timedelta(days=t)
@@ -279,6 +308,15 @@ class FeatureExtractor:
                 analog_probs = analog_model.predict_lead_probabilities(curr_state, exclude_year=year)
 
                 lead_dist = np.zeros((4, 4), dtype=np.float64)
+
+                # Lookahead-free climatology: use prior seasons if available; otherwise strictly past of current season
+                if has_prior_history:
+                    clim_mean = block_prior_mean
+                    clim_std = block_prior_std
+                else:
+                    past_only_rain = rain_series[:t]
+                    clim_mean = float(np.mean(past_only_rain))
+                    clim_std = float(np.std(past_only_rain)) + 1e-4
 
                 for lead_w in range(1, 5):
                     lead_key = f"week_{lead_w}"

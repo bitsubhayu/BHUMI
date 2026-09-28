@@ -1,7 +1,7 @@
 /**
  * Regional Language Configuration for BHUMI
  * 
- * Supports Bhashini / IndicTrans2 integration for plain-language advisory delivery.
+ * Multilingual configuration for BHUMI regional advisory delivery (IndicTrans2 designated open-source fallback).
  */
 
 export interface SupportedLanguage {
