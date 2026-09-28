@@ -136,22 +136,24 @@ export function RiskMap({
         data: geojson,
       });
 
-      // Layer 1: Fill layer with dynamic risk color
+      // Layer 1: Fill layer for Polygons/MultiPolygons with dynamic risk color
       map.addLayer({
         id: 'blocks-fill',
         type: 'fill',
         source: 'blocks-source',
+        filter: ['any', ['==', '$type', 'Polygon'], ['==', '$type', 'MultiPolygon']],
         paint: {
           'fill-color': getColorExpression(activePropertyKey),
           'fill-opacity': 0.72,
         },
       });
 
-      // Layer 2: Subtle outline
+      // Layer 2: Subtle outline for Polygons
       map.addLayer({
         id: 'blocks-outline',
         type: 'line',
         source: 'blocks-source',
+        filter: ['any', ['==', '$type', 'Polygon'], ['==', '$type', 'MultiPolygon']],
         paint: {
           'line-color': '#0f172a',
           'line-width': 1.2,
@@ -159,12 +161,16 @@ export function RiskMap({
         },
       });
 
-      // Layer 3: Selected block highlight
+      // Layer 3: Selected block highlight for Polygons
       map.addLayer({
         id: 'blocks-selected',
         type: 'line',
         source: 'blocks-source',
-        filter: ['==', ['get', 'block_id'], selectedBlockId || ''],
+        filter: [
+          'all',
+          ['any', ['==', '$type', 'Polygon'], ['==', '$type', 'MultiPolygon']],
+          ['==', ['get', 'block_id'], selectedBlockId || ''],
+        ],
         paint: {
           'line-color': '#4f46e5', // Deep indigo
           'line-width': 3.5,
@@ -172,7 +178,41 @@ export function RiskMap({
         },
       });
 
-      // Layer 4: Text label for block names at higher zoom
+      // Layer 4: Circle markers for fallback Centroid Points (when boundary_geom is not yet stored)
+      map.addLayer({
+        id: 'blocks-point',
+        type: 'circle',
+        source: 'blocks-source',
+        filter: ['==', '$type', 'Point'],
+        paint: {
+          'circle-color': getColorExpression(activePropertyKey),
+          'circle-radius': 9,
+          'circle-stroke-width': 2,
+          'circle-stroke-color': '#ffffff',
+          'circle-opacity': 0.95,
+        },
+      });
+
+      // Layer 5: Selected block highlight for Points
+      map.addLayer({
+        id: 'blocks-point-selected',
+        type: 'circle',
+        source: 'blocks-source',
+        filter: [
+          'all',
+          ['==', '$type', 'Point'],
+          ['==', ['get', 'block_id'], selectedBlockId || ''],
+        ],
+        paint: {
+          'circle-color': '#4f46e5',
+          'circle-radius': 13,
+          'circle-stroke-width': 3,
+          'circle-stroke-color': '#ffffff',
+          'circle-opacity': 1.0,
+        },
+      });
+
+      // Layer 6: Text label for block names
       map.addLayer({
         id: 'blocks-labels',
         type: 'symbol',
@@ -182,7 +222,12 @@ export function RiskMap({
           'text-field': ['get', 'block_name'],
           'text-font': ['Open Sans Semibold'],
           'text-size': 11,
-          'text-offset': [0, 0],
+          'text-offset': [
+            'case',
+            ['==', '$type', 'Point'],
+            ['literal', [0, 1.4]],
+            ['literal', [0, 0]],
+          ],
           'text-anchor': 'center',
         },
         paint: {
@@ -200,7 +245,7 @@ export function RiskMap({
       });
       popupRef.current = popup;
 
-      map.on('mousemove', 'blocks-fill', (e) => {
+      const handleMouseMove = (e: maplibregl.MapLayerMouseEvent) => {
         if (!e.features || e.features.length === 0) return;
         map.getCanvas().style.cursor = 'pointer';
 
@@ -212,6 +257,10 @@ export function RiskMap({
         const valText = typeof val === 'number' ? `${Math.round(val * 10) / 10}%` : 'N/A';
         const metricName = activeMetric === 'break' ? 'Break Risk' : activeMetric === 'onset' ? 'Onset Prob' : 'Heavy Rain Risk';
 
+        const repNotice = props.is_centroid_fallback
+          ? '<div style="font-size: 10px; color: #64748b; margin-top: 3px; font-style: italic;">• Centroid representation (boundary geom pending)</div>'
+          : '<div style="font-size: 10px; color: #059669; margin-top: 3px; font-weight: 500;">• PostGIS Boundary Polygon</div>';
+
         const html = `
           <div style="font-family: inherit; padding: 4px 6px; min-width: 140px;">
             <div style="font-size: 13px; font-weight: 700; color: #0f172a;">${props.block_name}</div>
@@ -221,31 +270,41 @@ export function RiskMap({
               <span style="color: #0f172a; margin-left: 8px;">${valText}</span>
             </div>
             ${props.is_experimental ? '<div style="font-size: 9px; color: #d97706; margin-top: 4px; font-weight: 500;">Experimental Tier</div>' : ''}
+            ${repNotice}
           </div>
         `;
 
         popup.setLngLat(coordinates).setHTML(html).addTo(map);
-      });
+      };
 
-      map.on('mouseleave', 'blocks-fill', () => {
+      const handleMouseLeave = () => {
         map.getCanvas().style.cursor = '';
         popup.remove();
-      });
+      };
 
-      // Interactions: Click Block
-      map.on('click', 'blocks-fill', (e) => {
+      const handleBlockClick = (e: maplibregl.MapLayerMouseEvent) => {
         if (!e.features || e.features.length === 0) return;
         const feature = e.features[0];
         const bId = feature.properties?.block_id;
         if (bId) {
           onSelectBlock(bId);
         }
-      });
+      };
+
+      map.on('mousemove', 'blocks-fill', handleMouseMove);
+      map.on('mousemove', 'blocks-point', handleMouseMove);
+      map.on('mouseleave', 'blocks-fill', handleMouseLeave);
+      map.on('mouseleave', 'blocks-point', handleMouseLeave);
+      map.on('click', 'blocks-fill', handleBlockClick);
+      map.on('click', 'blocks-point', handleBlockClick);
     } else {
       source.setData(geojson);
       // Update color expression for active metric & bucket
       if (map.getLayer('blocks-fill')) {
         map.setPaintProperty('blocks-fill', 'fill-color', getColorExpression(activePropertyKey));
+      }
+      if (map.getLayer('blocks-point')) {
+        map.setPaintProperty('blocks-point', 'circle-color', getColorExpression(activePropertyKey));
       }
     }
   }, [geojson, mapLoaded, activePropertyKey, getColorExpression, onSelectBlock, selectedBlockId, activeMetric, activeBucket]);
@@ -255,8 +314,20 @@ export function RiskMap({
     const map = mapRef.current;
     if (!map || !mapLoaded) return;
     if (map.getLayer('blocks-selected')) {
-      map.setFilter('blocks-selected', ['==', ['get', 'block_id'], selectedBlockId || '']);
+      map.setFilter('blocks-selected', [
+        'all',
+        ['any', ['==', '$type', 'Polygon'], ['==', '$type', 'MultiPolygon']],
+        ['==', ['get', 'block_id'], selectedBlockId || ''],
+      ]);
     }
+    if (map.getLayer('blocks-point-selected')) {
+      map.setFilter('blocks-point-selected', [
+        'all',
+        ['==', '$type', 'Point'],
+        ['==', ['get', 'block_id'], selectedBlockId || ''],
+      ]);
+    }
+
 
     if (selectedBlockId) {
       const match = blocks.find((b) => b.block_id === selectedBlockId);

@@ -158,13 +158,14 @@ export function evaluatePredictionTier(
       badgeLabel: 'Experimental Outlook',
       badgeVariant: 'secondary',
       notice:
-        'Experimental Model Output — Historical training coverage is currently limited (2 blocks, 1 season). This is not a validated production forecast.',
+        'Experimental Model Output — Historical training coverage is currently limited. This is not a validated production forecast.',
       reasons: [
         'National 4-class multi-season validation incomplete.',
-        'Single season historical archive available.',
+        'Historical training archive coverage is limited.',
         'Stage 1 GRU disabled pending multi-decadal sequence training.',
       ],
     };
+
   }
 
   return {

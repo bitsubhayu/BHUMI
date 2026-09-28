@@ -36,6 +36,7 @@ export interface ModelMetadata {
   gruStatus: string;
   trainingCoverage: {
     seasonsCount: number;
+    seasonsList?: number[];
     blocksCount: number;
     samplesGenerated: number;
     classDistribution: Record<string, number>;
@@ -59,6 +60,7 @@ export const FALLBACK_MODEL_METADATA: ModelMetadata = {
   gruStatus: 'DISABLED_INSUFFICIENT_TRAINING_DATA (samples=48, required=100)',
   trainingCoverage: {
     seasonsCount: 1,
+    seasonsList: [2024],
     blocksCount: 2,
     samplesGenerated: 96,
     classDistribution: {
@@ -95,6 +97,7 @@ export async function getModelMetadata(): Promise<ModelMetadata> {
         gruStatus: coverage.gru_status || 'DISABLED_INSUFFICIENT_TRAINING_DATA',
         trainingCoverage: {
           seasonsCount: coverage.seasons_count || 1,
+          seasonsList: coverage.seasons_list || readiness.archive_summary?.seasons || [2024],
           blocksCount: coverage.blocks_count || 2,
           samplesGenerated: coverage.samples_generated || 96,
           classDistribution: coverage.class_distribution || { '0': 66, '1': 4, '2': 22, '3': 4 },
@@ -107,6 +110,7 @@ export async function getModelMetadata(): Promise<ModelMetadata> {
 
   return FALLBACK_MODEL_METADATA;
 }
+
 
 /**
  * Fetches all registered administrative blocks from public.blocks.
@@ -227,116 +231,6 @@ export async function getRecentTeleconnections(limit = 14): Promise<Teleconnecti
   }
 }
 
-/**
- * Transforms blocks and their latest predictions into a GeoJSON FeatureCollection
- * for high-performance rendering in MapLibre GL.
- */
-export interface BlockMapFeatureProperties {
-  block_id: string;
-  block_name: string;
-  district_name: string;
-  state_name: string;
-  elevation_m: number | null;
-  slope_deg: number | null;
-  distance_to_coast_km: number | null;
-  agro_climatic_zone: string | null;
-  // Dynamic weekly probabilities
-  week_1_break: number | null;
-  week_1_onset: number | null;
-  week_1_heavy: number | null;
-  week_2_break: number | null;
-  week_2_onset: number | null;
-  week_2_heavy: number | null;
-  week_3_break: number | null;
-  week_3_onset: number | null;
-  week_3_heavy: number | null;
-  week_4_break: number | null;
-  week_4_onset: number | null;
-  week_4_heavy: number | null;
-  confidence: number | null;
-  primary_driver: string | null;
-  analog_year: number | null;
-  is_experimental: boolean;
-}
+export * from './geo';
 
-export function buildBlockGeoJSON(
-  blocks: BlockRow[],
-  predictions: LivePredictionRow[]
-): GeoJSON.FeatureCollection<GeoJSON.Geometry, BlockMapFeatureProperties> {
-  const predByBlockAndLead: Record<string, Record<string, LivePredictionRow>> = {};
 
-  for (const p of predictions) {
-    if (!predByBlockAndLead[p.block_id]) {
-      predByBlockAndLead[p.block_id] = {};
-    }
-    // Only store if not already set for that lead bucket
-    if (!predByBlockAndLead[p.block_id][p.lead_time_bucket]) {
-      predByBlockAndLead[p.block_id][p.lead_time_bucket] = p;
-    }
-  }
-
-  const features: GeoJSON.Feature<GeoJSON.Geometry, BlockMapFeatureProperties>[] = [];
-
-  for (const block of blocks) {
-    const bId = block.block_id;
-    const leads = predByBlockAndLead[bId] || {};
-    const w1 = leads.week_1;
-    const w2 = leads.week_2;
-    const w3 = leads.week_3;
-    const w4 = leads.week_4;
-
-    const lon = block.centroid_lon;
-    const lat = block.centroid_lat;
-
-    // Create a bounding box polygon around centroid (~10km diameter) for interactive polygon rendering
-    const delta = 0.08;
-    const polygonCoordinates: [number, number][][] = [[
-      [lon - delta, lat - delta],
-      [lon + delta, lat - delta],
-      [lon + delta, lat + delta],
-      [lon - delta, lat + delta],
-      [lon - delta, lat - delta],
-    ]];
-
-    const properties: BlockMapFeatureProperties = {
-      block_id: block.block_id,
-      block_name: block.block_name,
-      district_name: block.district_name,
-      state_name: block.state_name,
-      elevation_m: block.elevation_m,
-      slope_deg: block.slope_deg,
-      distance_to_coast_km: block.distance_to_coast_km,
-      agro_climatic_zone: block.agro_climatic_zone,
-      week_1_break: w1?.break_probability ?? null,
-      week_1_onset: w1?.onset_probability ?? null,
-      week_1_heavy: w1?.heavy_spell_probability ?? null,
-      week_2_break: w2?.break_probability ?? null,
-      week_2_onset: w2?.onset_probability ?? null,
-      week_2_heavy: w2?.heavy_spell_probability ?? null,
-      week_3_break: w3?.break_probability ?? null,
-      week_3_onset: w3?.onset_probability ?? null,
-      week_3_heavy: w3?.heavy_spell_probability ?? null,
-      week_4_break: w4?.break_probability ?? null,
-      week_4_onset: w4?.onset_probability ?? null,
-      week_4_heavy: w4?.heavy_spell_probability ?? null,
-      confidence: w1?.calibrated_confidence ?? null,
-      primary_driver: w1?.primary_driver ?? null,
-      analog_year: w1?.teleconnection_analog_year ?? null,
-      is_experimental: Boolean(w1?.primary_driver?.includes('[EXPERIMENTAL]')),
-    };
-
-    features.push({
-      type: 'Feature',
-      geometry: {
-        type: 'Polygon',
-        coordinates: polygonCoordinates,
-      },
-      properties,
-    });
-  }
-
-  return {
-    type: 'FeatureCollection',
-    features,
-  };
-}

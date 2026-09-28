@@ -1,22 +1,18 @@
 'use client';
 
-import React, { useState, useMemo } from 'react';
+import React, { useMemo } from 'react';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import {
   Mountain,
-  Sliders,
   Info,
   TrendingUp,
   CloudRain,
   Sun,
+  ShieldCheck,
 } from 'lucide-react';
 import type { BlockRow, LivePredictionRow } from '@/lib/supabase/types';
-import {
-  derivePanchayatOutlook,
-  getPresetPanchayatProfiles,
-  type PanchayatTerrainProfile,
-} from '@/lib/panchayat';
+import { derivePanchayatOutlook } from '@/lib/panchayat';
 import { getRiskLevel, getRiskMeta, formatProbability } from '@/lib/risk';
 
 interface PanchayatOutlookViewProps {
@@ -25,31 +21,18 @@ interface PanchayatOutlookViewProps {
 }
 
 export function PanchayatOutlookView({ block, prediction }: PanchayatOutlookViewProps) {
-  const presets = useMemo(() => {
-    if (!block) return [];
-    return getPresetPanchayatProfiles(block);
-  }, [block]);
-
-  const [selectedPresetIndex, setSelectedPresetIndex] = useState<number>(0);
-
-  const activeProfile = useMemo<Partial<PanchayatTerrainProfile>>(() => {
-    if (!block) return {};
-    return presets[selectedPresetIndex] || presets[0] || {};
-  }, [block, presets, selectedPresetIndex]);
-
-
   const derived = useMemo(() => {
     if (!block || !prediction) return null;
-    return derivePanchayatOutlook(block, prediction, activeProfile);
-  }, [block, prediction, activeProfile]);
+    return derivePanchayatOutlook(block, prediction);
+  }, [block, prediction]);
 
   if (!block || !prediction) {
     return (
       <Card className="border-border/70 shadow-sm bg-card/60 backdrop-blur-xs">
         <CardContent className="p-6 text-center text-muted-foreground text-xs space-y-2">
           <Mountain className="h-6 w-6 text-primary mx-auto opacity-70" />
-          <p className="font-semibold text-foreground">Select a block with an active forecast to view derived panchayat terrain adjustments.</p>
-          <p className="text-[11px]">BCSD micro-topography downscaling operates on-demand relative to block centroid elevation.</p>
+          <p className="font-semibold text-foreground">Select a block with an active forecast to view the on-demand panchayat outlook.</p>
+          <p className="text-[11px]">BCSD on-demand computation serves village/panchayat scale views without permanent database records.</p>
         </CardContent>
       </Card>
     );
@@ -83,24 +66,26 @@ export function PanchayatOutlookView({ block, prediction }: PanchayatOutlookView
 
           <div className="text-right text-xs font-mono text-muted-foreground bg-background/50 p-2 rounded border border-border/40 shrink-0">
             <div>
-              Target Elev: <span className="font-bold text-foreground">{derived?.elevationM}m</span>
-              <span className="text-primary ml-1 font-semibold">
-                ({derived && derived.elevationDeltaM >= 0 ? `+${derived.elevationDeltaM}` : derived?.elevationDeltaM}m vs block)
-              </span>
+              Block Base Elevation: <span className="font-bold text-foreground">{block.elevation_m ? `${block.elevation_m}m` : 'N/A'}</span>
             </div>
             <div className="text-[11px] mt-0.5">
-              Slope: <span className="font-bold text-foreground">{derived?.slopeDeg}&deg;</span> | Orographic: {derived?.adjustments.orographicFactor}%
+              Mean Slope: <span className="font-bold text-foreground">{block.slope_deg ? `${block.slope_deg}°` : 'N/A'}</span> | Mode: On-Demand
             </div>
           </div>
         </div>
 
-        {/* Mandatory Provenance Disclaimer */}
+        {/* Mandatory Provenance & Non-Persistent Disclaimer */}
         <div className="mt-3 p-2.5 rounded-md bg-sky-500/10 border border-sky-500/30 text-sky-950 dark:text-sky-200 text-xs flex items-start gap-2">
           <Info className="h-4 w-4 text-sky-600 dark:text-sky-400 shrink-0 mt-0.5" />
           <div className="space-y-0.5 leading-relaxed">
-            <span className="font-bold uppercase tracking-wider text-[10.5px] text-sky-700 dark:text-sky-300">
-              Notice: {derived?.provenance.label}
-            </span>
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="font-bold uppercase tracking-wider text-[10.5px] text-sky-700 dark:text-sky-300">
+                Notice: {derived?.provenance.label}
+              </span>
+              <span className="text-[10px] px-1.5 py-0.2 rounded bg-sky-500/20 text-sky-800 dark:text-sky-300 font-mono">
+                {derived?.provenance.scenarioType}
+              </span>
+            </div>
             <p className="text-[11px] text-muted-foreground">
               {derived?.provenance.disclaimer}
             </p>
@@ -108,48 +93,16 @@ export function PanchayatOutlookView({ block, prediction }: PanchayatOutlookView
         </div>
       </CardHeader>
 
-      <CardContent className="p-4 sm:p-5 space-y-5">
-        {/* Preset Micro-Terrain Selector */}
-        <div>
-          <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5 mb-2">
-            <Sliders className="h-3.5 w-3.5" />
-            Topographical Archetype (Micro-Elevation Variance)
-          </label>
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-            {presets.map((preset, idx) => {
-              const isSelected = selectedPresetIndex === idx;
-              return (
-                <button
-                  key={preset.name}
-                  type="button"
-                  onClick={() => setSelectedPresetIndex(idx)}
-                  className={`p-2.5 rounded-lg border text-left transition-all ${
-
-                    isSelected
-                      ? 'bg-primary/10 border-primary shadow-xs ring-1 ring-primary'
-                      : 'bg-muted/30 hover:bg-muted/60 border-border/60'
-                  }`}
-                >
-                  <div className="text-xs font-bold text-foreground">{preset.name}</div>
-                  <div className="text-[11px] text-muted-foreground font-mono mt-1">
-                    Elevation: {preset.elevationM}m ({preset.elevationM - (block.elevation_m ?? 300) >= 0 ? '+' : ''}
-                    {preset.elevationM - (block.elevation_m ?? 300)}m)
-                  </div>
-                  <div className="text-[10px] text-primary capitalize font-medium mt-0.5">
-                    Archetype: {preset.terrainType}
-                  </div>
-                </button>
-              );
-            })}
-          </div>
-        </div>
-
-        {/* Derived Probabilities vs Parent Block Baseline */}
+      <CardContent className="p-4 sm:p-5 space-y-4">
+        {/* Derived Probabilities matching Parent Block Baseline */}
         {derived && (
           <div className="space-y-3">
             <div className="flex items-center justify-between text-xs text-muted-foreground font-medium border-b border-border/40 pb-1">
-              <span>Downscaled Risk Metrics</span>
-              <span>Parent Block Baseline &Delta; Delta</span>
+              <span>Block-Derived Probability Metrics</span>
+              <span className="font-mono text-[11px] text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
+                <ShieldCheck className="h-3.5 w-3.5" />
+                Preserving Calibrated Block Baseline
+              </span>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
@@ -169,11 +122,11 @@ export function PanchayatOutlookView({ block, prediction }: PanchayatOutlookView
                     {formatProbability(derived.breakProbability)}
                   </span>
                   <span className="text-xs font-mono text-muted-foreground">
-                    {derived.adjustments.breakDelta >= 0 ? `+${derived.adjustments.breakDelta}` : derived.adjustments.breakDelta}%
+                    Δ 0.0%
                   </span>
                 </div>
                 <p className="text-[10px] text-muted-foreground leading-tight">
-                  Base block: {formatProbability(prediction.break_probability)}
+                  Parent block baseline ({formatProbability(prediction.break_probability)}).
                 </p>
               </div>
 
@@ -193,11 +146,11 @@ export function PanchayatOutlookView({ block, prediction }: PanchayatOutlookView
                     {formatProbability(derived.onsetProbability)}
                   </span>
                   <span className="text-xs font-mono text-muted-foreground">
-                    {derived.adjustments.onsetDelta >= 0 ? `+${derived.adjustments.onsetDelta}` : derived.adjustments.onsetDelta}%
+                    Δ 0.0%
                   </span>
                 </div>
                 <p className="text-[10px] text-muted-foreground leading-tight">
-                  Base block: {formatProbability(prediction.onset_probability)}
+                  Parent block baseline ({formatProbability(prediction.onset_probability)}).
                 </p>
               </div>
 
@@ -217,17 +170,17 @@ export function PanchayatOutlookView({ block, prediction }: PanchayatOutlookView
                     {formatProbability(derived.heavySpellProbability)}
                   </span>
                   <span className="text-xs font-mono text-muted-foreground">
-                    {derived.adjustments.heavyDelta >= 0 ? `+${derived.adjustments.heavyDelta}` : derived.adjustments.heavyDelta}%
+                    Δ 0.0%
                   </span>
                 </div>
                 <p className="text-[10px] text-muted-foreground leading-tight">
-                  Base block: {formatProbability(prediction.heavy_spell_probability)}
+                  Parent block baseline ({formatProbability(prediction.heavy_spell_probability)}).
                 </p>
               </div>
             </div>
 
-            <div className="p-3 rounded-md bg-muted/30 border border-border/40 text-[11px] text-muted-foreground flex items-center justify-between">
-              <span>BCSD Lapse Adjustment Rate: ~1.5% precipitation trigger per 100m elevation delta</span>
+            <div className="p-2.5 rounded-md bg-muted/30 border border-border/40 text-[11px] text-muted-foreground flex flex-col sm:flex-row sm:items-center justify-between gap-1">
+              <span>{derived.adjustments.adjustmentReason}</span>
               <span className="font-mono">Calibrated Confidence: {formatProbability(derived.calibratedConfidence)}</span>
             </div>
           </div>

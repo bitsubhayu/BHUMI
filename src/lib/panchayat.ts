@@ -1,27 +1,19 @@
 /**
  * BHUMI On-Demand Panchayat Downscaling Engine
  *
- * Implements BCSD (Bias Correction and Spatial Downscaling) terrain adjustments
- * documented in TECH_STACK.md §3 and §5.
+ * Implements the on-demand BCSD serve-time architecture documented in TECH_STACK.md §3:
+ * "Panchayat values are computed on request: block value + a static terrain adjustment
+ * using the terrain table above. This satisfies the PS's 'panchayat scale' requirement
+ * as a computed output, not a stored history."
  *
- * STRICT ARCHITECTURAL CONSTRAINT:
- * Panchayat-level records are NEVER stored in Supabase (which would multiply storage by ~37x
- * to ~250,000 entities and violate the 500 MB budget).
- * All panchayat outlooks are derived ON-DEMAND at serve time from the parent administrative block
- * using static digital elevation model (DEM) and slope variance.
- *
- * MANDATORY LABELLING:
- * Must always be explicitly labeled as "Block-derived panchayat outlook".
+ * STRICT ARCHITECTURAL CONSTRAINTS:
+ * 1. Zero permanent panchayat records in Supabase (enforcing 500 MB free-tier quota).
+ * 2. Mandatory provenance labeling: Always explicitly labeled as "Block-derived panchayat outlook".
+ * 3. Data Integrity: Parent block forecast probabilities are preserved without invented
+ *    lapse-rate adjustments or fabricated named panchayat entities.
  */
 
 import type { BlockRow, LivePredictionRow } from '@/lib/supabase/types';
-
-export interface PanchayatTerrainProfile {
-  name: string;
-  elevationM: number;
-  slopeDeg: number;
-  terrainType: 'ridge' | 'plateau' | 'valley' | 'custom';
-}
 
 export interface DerivedPanchayatOutlook {
   panchayatName: string;
@@ -29,10 +21,8 @@ export interface DerivedPanchayatOutlook {
   parentBlockName: string;
   parentDistrict: string;
   parentState: string;
-  elevationM: number;
-  elevationDeltaM: number;
-  slopeDeg: number;
-  terrainType: string;
+  elevationM: number | null;
+  slopeDeg: number | null;
   onsetProbability: number;
   breakProbability: number;
   heavySpellProbability: number;
@@ -41,10 +31,12 @@ export interface DerivedPanchayatOutlook {
     onsetDelta: number;
     breakDelta: number;
     heavyDelta: number;
-    orographicFactor: number;
+    isAdjusted: boolean;
+    adjustmentReason: string;
   };
   provenance: {
     label: string;
+    scenarioType: string;
     methodology: string;
     disclaimer: string;
     isPermanentRecord: false;
@@ -52,95 +44,44 @@ export interface DerivedPanchayatOutlook {
 }
 
 /**
- * Common representative micro-topographical archetypes found across Indian agricultural blocks.
- */
-export function getPresetPanchayatProfiles(block: BlockRow): PanchayatTerrainProfile[] {
-  const baseElev = block.elevation_m ?? 350;
-  const baseSlope = block.slope_deg ?? 1.5;
-
-  return [
-    {
-      name: `${block.block_name} Upland (Ridge)`,
-      elevationM: Math.round(baseElev + 120),
-      slopeDeg: Math.round((baseSlope + 2.5) * 10) / 10,
-      terrainType: 'ridge',
-    },
-    {
-      name: `${block.block_name} Central Gram Panchayat`,
-      elevationM: Math.round(baseElev),
-      slopeDeg: Math.round(baseSlope * 10) / 10,
-      terrainType: 'plateau',
-    },
-    {
-      name: `${block.block_name} Lower Valley Gram Panchayat`,
-      elevationM: Math.max(10, Math.round(baseElev - 100)),
-      slopeDeg: Math.max(0.2, Math.round((baseSlope - 1.0) * 10) / 10),
-      terrainType: 'valley',
-    },
-  ];
-}
-
-/**
- * Computes on-demand BCSD terrain adjustment from parent block prediction.
+ * Computes a provisional block-derived panchayat outlook on demand.
+ *
+ * Adheres strictly to the PRD/TECH_STACK rule:
+ * - No permanent panchayat database records are created or stored.
+ * - In the absence of an empirically documented and validated lapse-rate curve,
+ *   the authoritative parent block forecast probabilities are preserved without
+ *   arbitrary synthetic scaling.
  */
 export function derivePanchayatOutlook(
   block: BlockRow,
-  prediction: LivePredictionRow,
-  customProfile?: Partial<PanchayatTerrainProfile>
+  prediction: LivePredictionRow
 ): DerivedPanchayatOutlook {
-  const baseElev = block.elevation_m ?? 300;
-  const targetElev = customProfile?.elevationM ?? (baseElev + 80);
-  const targetSlope = customProfile?.slopeDeg ?? ((block.slope_deg ?? 1.5) + 1.0);
-  const panchayatName = customProfile?.name ?? `${block.block_name} (Derived Panchayat View)`;
-  const terrainType = customProfile?.terrainType ?? 'plateau';
-
-  const deltaZ = targetElev - baseElev; // meters relative to block centroid
-  const deltaSlope = targetSlope - (block.slope_deg ?? 1.5);
-
-  // Orographic precipitation lapse adjustment (~1.5% per 100m delta elevation, capped at +/- 15%)
-  const rawOrographic = (deltaZ / 100) * 1.5;
-  const orographicFactor = Math.max(-15.0, Math.min(15.0, rawOrographic));
-
-  // High elevation / ridge enhances orographic trigger for heavy rain and onset
-  const heavyDelta = Math.round(orographicFactor * 10) / 10;
-  const onsetDelta = Math.round((orographicFactor * 0.6) * 10) / 10;
-
-  // Valley descent or rain shadow increases break/dry-spell risk; ridge reduces break risk
-  const breakDelta = Math.round((-orographicFactor * 0.8 + Math.max(0, deltaSlope) * 0.5) * 10) / 10;
-
-  const adjOnset = Math.max(0, Math.min(100, Math.round((prediction.onset_probability + onsetDelta) * 10) / 10));
-  const adjBreak = Math.max(0, Math.min(100, Math.round((prediction.break_probability + breakDelta) * 10) / 10));
-  const adjHeavy = Math.max(0, Math.min(100, Math.round((prediction.heavy_spell_probability + heavyDelta) * 10) / 10));
-
-  // Confidence is slightly modulated by distance from block centroid elevation
-  const confidencePenalty = Math.min(8.0, (Math.abs(deltaZ) / 200) * 2.0);
-  const adjConfidence = Math.max(20, Math.min(99, Math.round((prediction.calibrated_confidence - confidencePenalty) * 10) / 10));
-
   return {
-    panchayatName,
+    panchayatName: `Provisional Panchayat Outlook (${block.block_name})`,
     parentBlockId: block.block_id,
     parentBlockName: block.block_name,
     parentDistrict: block.district_name,
     parentState: block.state_name,
-    elevationM: targetElev,
-    elevationDeltaM: deltaZ,
-    slopeDeg: targetSlope,
-    terrainType,
-    onsetProbability: adjOnset,
-    breakProbability: adjBreak,
-    heavySpellProbability: adjHeavy,
-    calibratedConfidence: adjConfidence,
+    elevationM: block.elevation_m,
+    slopeDeg: block.slope_deg,
+    onsetProbability: prediction.onset_probability,
+    breakProbability: prediction.break_probability,
+    heavySpellProbability: prediction.heavy_spell_probability,
+    calibratedConfidence: prediction.calibrated_confidence,
     adjustments: {
-      onsetDelta,
-      breakDelta,
-      heavyDelta,
-      orographicFactor: Math.round(orographicFactor * 10) / 10,
+      onsetDelta: 0.0,
+      breakDelta: 0.0,
+      heavyDelta: 0.0,
+      isAdjusted: false,
+      adjustmentReason:
+        'Authoritative parent block forecast maintained. Documented empirical lapse-rate calibration is pending localized high-resolution DEM integration.',
     },
     provenance: {
       label: 'Block-derived panchayat outlook',
-      methodology: 'Bias Correction and Spatial Downscaling (BCSD) terrain lapse rate',
+      scenarioType: 'Provisional/illustrative block-derived terrain scenario',
+      methodology: 'On-demand serve-time BCSD architecture (non-persistent)',
       disclaimer:
-        'Computed on-demand from parent block forecast data and digital elevation model (DEM) variance. No permanent panchayat database records exist in accordance with storage design constraints.',
+        'Provisional panchayat outlook computed on-demand from parent block forecast. No permanent panchayat database records exist in accordance with storage design constraints. Forecast probabilities reflect the authoritative parent block baseline.',
       isPermanentRecord: false,
     },
   };

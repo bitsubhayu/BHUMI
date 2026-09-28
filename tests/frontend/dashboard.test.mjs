@@ -11,10 +11,8 @@ import {
   RISK_LEVELS,
 } from '../../src/lib/risk.ts';
 
-import {
-  derivePanchayatOutlook,
-  getPresetPanchayatProfiles,
-} from '../../src/lib/panchayat.ts';
+import { derivePanchayatOutlook } from '../../src/lib/panchayat.ts';
+import { resolveBlockGeometry, buildBlockGeoJSON } from '../../src/lib/geo.ts';
 
 describe('1. Prediction Formatting', () => {
   it('formats normal numeric probabilities with one decimal place', () => {
@@ -141,7 +139,7 @@ describe('4. Missing Prediction Handling', () => {
   });
 });
 
-describe('5. On-Demand Panchayat Derived-View Labeling & BCSD Downscaling', () => {
+describe('5. On-Demand Panchayat Derived-View Labeling (Non-Persistent & Baseline-Preserving)', () => {
   const dummyBlock = {
     block_id: 'IND_MH_PUN_001',
     block_name: 'Haveli',
@@ -179,35 +177,38 @@ describe('5. On-Demand Panchayat Derived-View Labeling & BCSD Downscaling', () =
     const derived = derivePanchayatOutlook(dummyBlock, dummyPrediction);
     assert.equal(derived.provenance.label, 'Block-derived panchayat outlook');
     assert.equal(derived.provenance.isPermanentRecord, false);
+    assert.equal(derived.provenance.scenarioType, 'Provisional/illustrative block-derived terrain scenario');
     assert.match(derived.provenance.disclaimer, /no permanent panchayat database records exist/i);
   });
 
-  it('adjusts heavy rain and break probability based on positive elevation delta (ridge)', () => {
-    const ridgeProfile = {
-      name: 'Haveli Ridge GP',
-      elevationM: 760, // +200m
-      slopeDeg: 4.5,
-      terrainType: 'ridge',
-    };
-    const derived = derivePanchayatOutlook(dummyBlock, dummyPrediction, ridgeProfile);
+  it('preserves authoritative parent block forecast probabilities without synthetic lapse rates', () => {
+    const derived = derivePanchayatOutlook(dummyBlock, dummyPrediction);
 
-    // +200m elevation delta produces positive orographic trigger (+3.0%)
-    assert.ok(derived.elevationDeltaM === 200);
-    assert.ok(derived.adjustments.orographicFactor > 0);
-    assert.ok(derived.heavySpellProbability > dummyPrediction.heavy_spell_probability);
-    assert.equal(derived.parentBlockId, 'IND_MH_PUN_001');
-  });
+    // Baseline probabilities must be preserved without invented scaling
+    assert.equal(derived.onsetProbability, dummyPrediction.onset_probability);
+    assert.equal(derived.breakProbability, dummyPrediction.break_probability);
+    assert.equal(derived.heavySpellProbability, dummyPrediction.heavy_spell_probability);
+    assert.equal(derived.calibratedConfidence, dummyPrediction.calibrated_confidence);
 
-  it('provides standard preset topographical archetypes', () => {
-    const presets = getPresetPanchayatProfiles(dummyBlock);
-    assert.equal(presets.length, 3);
-    assert.equal(presets[0].terrainType, 'ridge');
-    assert.equal(presets[1].terrainType, 'plateau');
-    assert.equal(presets[2].terrainType, 'valley');
+    // Deltas are cleanly 0.0
+    assert.equal(derived.adjustments.onsetDelta, 0.0);
+    assert.equal(derived.adjustments.breakDelta, 0.0);
+    assert.equal(derived.adjustments.heavyDelta, 0.0);
+    assert.equal(derived.adjustments.isAdjusted, false);
   });
 });
 
-describe('6. Block Selection & GeoJSON Polygon Assembly', () => {
+describe('6. Authentic Boundary GeoJSON Serialization & Centroid Fallback', () => {
+  const authenticPolygonCoords = [
+    [
+      [73.81, 18.51],
+      [73.89, 18.51],
+      [73.89, 18.59],
+      [73.81, 18.59],
+      [73.81, 18.51],
+    ],
+  ];
+
   const sampleBlocks = [
     {
       block_id: 'IND_MH_PUN_001',
@@ -220,7 +221,10 @@ describe('6. Block Selection & GeoJSON Polygon Assembly', () => {
       slope_deg: 2.1,
       distance_to_coast_km: 120,
       agro_climatic_zone: 'Western Plateau',
-      boundary_geom: null,
+      boundary_geom: {
+        type: 'Polygon',
+        coordinates: authenticPolygonCoords,
+      },
       created_at: '2026-09-28T00:00:00Z',
       updated_at: '2026-09-28T00:00:00Z',
     },
@@ -235,7 +239,7 @@ describe('6. Block Selection & GeoJSON Polygon Assembly', () => {
       slope_deg: 0.8,
       distance_to_coast_km: 450,
       agro_climatic_zone: 'Arid Western',
-      boundary_geom: null,
+      boundary_geom: null, // Missing boundary geom
       created_at: '2026-09-28T00:00:00Z',
       updated_at: '2026-09-28T00:00:00Z',
     },
@@ -276,42 +280,37 @@ describe('6. Block Selection & GeoJSON Polygon Assembly', () => {
     },
   ];
 
-  it('builds closed polygon geometry around centroid coordinates', () => {
-    // Pure GeoJSON geometry builder test
-    const delta = 0.08;
-    const b = sampleBlocks[0];
-    const ring = [
-      [b.centroid_lon - delta, b.centroid_lat - delta],
-      [b.centroid_lon + delta, b.centroid_lat - delta],
-      [b.centroid_lon + delta, b.centroid_lat + delta],
-      [b.centroid_lon - delta, b.centroid_lat + delta],
-      [b.centroid_lon - delta, b.centroid_lat - delta],
-    ];
-
-    assert.equal(ring.length, 5);
-    // Closed ring check: start == end
-    assert.deepEqual(ring[0], ring[4]);
-    assert.ok(ring[0][0] < b.centroid_lon);
-    assert.ok(ring[1][0] > b.centroid_lon);
+  it('uses authentic PostGIS Polygon geometry when boundary_geom is available', () => {
+    const res = resolveBlockGeometry(sampleBlocks[0]);
+    assert.equal(res.geometry.type, 'Polygon');
+    assert.deepEqual(res.geometry.coordinates, authenticPolygonCoords);
+    assert.equal(res.representation, 'boundary_polygon');
+    assert.equal(res.isCentroidFallback, false);
   });
 
-  it('correctly maps multi-week lead times and detects experimental tag', () => {
-    const w1 = samplePredictions.find((p) => p.block_id === 'IND_MH_PUN_001' && p.lead_time_bucket === 'week_1');
-    const w2 = samplePredictions.find((p) => p.block_id === 'IND_MH_PUN_001' && p.lead_time_bucket === 'week_2');
-
-    assert.equal(w1.onset_probability, 45.0);
-    assert.equal(w2.break_probability, 55.0);
-    assert.ok(w2.primary_driver.includes('[EXPERIMENTAL]'));
+  it('falls back to Point geometry at centroid when boundary_geom is missing without inventing fake polygons', () => {
+    const res = resolveBlockGeometry(sampleBlocks[1]);
+    assert.equal(res.geometry.type, 'Point');
+    assert.deepEqual(res.geometry.coordinates, [sampleBlocks[1].centroid_lon, sampleBlocks[1].centroid_lat]);
+    assert.equal(res.representation, 'centroid_fallback');
+    assert.equal(res.isCentroidFallback, true);
   });
 
-  it('allows selecting blocks and retrieving associated forecasts seamlessly', () => {
-    const selectedId = 'IND_MH_PUN_001';
-    const selectedBlock = sampleBlocks.find((b) => b.block_id === selectedId);
-    assert.ok(selectedBlock);
-    assert.equal(selectedBlock.block_name, 'Haveli');
+  it('buildBlockGeoJSON assembles FeatureCollection with dynamic risk and representation properties', () => {
+    const fc = buildBlockGeoJSON(sampleBlocks, samplePredictions);
+    assert.equal(fc.type, 'FeatureCollection');
+    assert.equal(fc.features.length, 2);
 
-    const matchedPreds = samplePredictions.filter((p) => p.block_id === selectedId);
-    assert.equal(matchedPreds.length, 2);
+    const f1 = fc.features[0];
+    assert.equal(f1.geometry.type, 'Polygon');
+    assert.equal(f1.properties.representation, 'boundary_polygon');
+    assert.equal(f1.properties.is_centroid_fallback, false);
+    assert.equal(f1.properties.week_1_break, 25.0);
+    assert.equal(f1.properties.week_2_break, 55.0);
+
+    const f2 = fc.features[1];
+    assert.equal(f2.geometry.type, 'Point');
+    assert.equal(f2.properties.representation, 'centroid_fallback');
+    assert.equal(f2.properties.is_centroid_fallback, true);
   });
 });
-
