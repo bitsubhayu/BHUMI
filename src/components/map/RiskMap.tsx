@@ -75,6 +75,9 @@ export function RiskMap({
 
   // Initialize MapLibre GL
   useEffect(() => {
+    if (typeof maplibregl.setWorkerUrl === 'function') {
+      maplibregl.setWorkerUrl('/maplibre-gl-worker.mjs');
+    }
     if (!mapContainerRef.current || mapRef.current) return;
 
     const map = new maplibregl.Map({

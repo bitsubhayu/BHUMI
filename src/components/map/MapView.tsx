@@ -35,7 +35,6 @@ interface MapViewProps {
 }
 
 const POSITRON_URL = 'https://tiles.openfreemap.org/styles/positron';
-const LIBERTY_URL = 'https://tiles.openfreemap.org/styles/liberty';
 const LOAD_TIMEOUT_MS = 5000;
 
 // Risk color step expression for MapLibre
@@ -90,20 +89,14 @@ function MapViewInner(
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const maplibregl = await import('maplibre-gl') as any;
 
-        // Test basemap availability
-        let styleUrl = POSITRON_URL;
-        try {
-          const timeoutPromise = new Promise((_, reject) =>
-            setTimeout(() => reject(new Error('timeout')), 3000),
-          ) as Promise<Response>;
-          const probe = await Promise.race([
-            fetch(POSITRON_URL, { method: 'HEAD' }),
-            timeoutPromise,
-          ]);
-          if (!probe.ok) styleUrl = LIBERTY_URL;
-        } catch {
-          styleUrl = LIBERTY_URL;
+        // Configure worker URL from public directory for Next.js/Turbopack bundler compatibility
+        if (typeof maplibregl.setWorkerUrl === 'function') {
+          maplibregl.setWorkerUrl('/maplibre-gl-worker.mjs');
+        } else if (maplibregl.config) {
+          maplibregl.config.WORKER_URL = '/maplibre-gl-worker.mjs';
         }
+
+        const styleUrl = POSITRON_URL;
 
         if (cancelled) return;
 
@@ -124,34 +117,32 @@ function MapViewInner(
 
         mapRef.current = map;
 
-        // Fallback timeout
-        timeoutId = setTimeout(() => {
-          if (!ready) setFallback(true);
-        }, LOAD_TIMEOUT_MS);
-
-        map.on('load', () => {
-          clearTimeout(timeoutId);
-          if (cancelled) return;
+        let isLoaded = false;
+        const ensureLayers = () => {
+          if (cancelled || !mapRef.current) return;
+          if (isLoaded) return;
+          isLoaded = true;
+          const currentMap = mapRef.current;
           setReady(true);
 
           // ── Add initial layers ────────────────────────────────────
           // Background
-          if (!map.getLayer('background-fallback')) {
-            map.addLayer(
+          if (!currentMap.getLayer('background-fallback')) {
+            currentMap.addLayer(
               { id: 'background-fallback', type: 'background', paint: { 'background-color': '#F0F4F8' } },
-              map.getStyle()?.layers?.[0]?.id,
+              currentMap.getStyle()?.layers?.[0]?.id,
             );
           }
           // GeoJSON source
-          if (!map.getSource('risk')) {
-            map.addSource('risk', {
+          if (!currentMap.getSource('risk')) {
+            currentMap.addSource('risk', {
               type: 'geojson',
               data: geoJSON ?? { type: 'FeatureCollection', features: [] },
             });
           }
           // Fill layer
-          if (!map.getLayer('risk-fill')) {
-            map.addLayer({
+          if (!currentMap.getLayer('risk-fill')) {
+            currentMap.addLayer({
               id: 'risk-fill',
               type: 'fill',
               source: 'risk',
@@ -162,8 +153,8 @@ function MapViewInner(
             });
           }
           // Outline layer
-          if (!map.getLayer('risk-outline')) {
-            map.addLayer({
+          if (!currentMap.getLayer('risk-outline')) {
+            currentMap.addLayer({
               id: 'risk-outline',
               type: 'line',
               source: 'risk',
@@ -185,8 +176,8 @@ function MapViewInner(
           }
 
           // Circle layer for Point / centroid-fallback features
-          if (!map.getLayer('risk-circle')) {
-            map.addLayer({
+          if (!currentMap.getLayer('risk-circle')) {
+            currentMap.addLayer({
               id: 'risk-circle',
               type: 'circle',
               source: 'risk',
@@ -209,7 +200,35 @@ function MapViewInner(
               },
             });
           }
+        };
+
+        map.on('load', () => {
+          clearTimeout(timeoutId);
+          ensureLayers();
         });
+
+        // Fallback timeout: if basemap tile style hangs or is offline, render risk layer on clean background
+        timeoutId = setTimeout(() => {
+          if (!isLoaded) {
+            console.warn('[MapView] Basemap load timed out, activating fallback background');
+            try {
+              map.setStyle({
+                version: 8,
+                sources: {},
+                layers: [
+                  {
+                    id: 'background-fallback',
+                    type: 'background',
+                    paint: { 'background-color': '#F0F4F8' },
+                  },
+                ],
+              });
+              map.once('style.load', ensureLayers);
+            } catch {
+              ensureLayers();
+            }
+          }
+        }, LOAD_TIMEOUT_MS);
 
         map.on('error', (e: { error?: { message?: string } }) => {
           console.warn('[MapView] MapLibre error:', e.error?.message);

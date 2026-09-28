@@ -12,10 +12,10 @@
 'use client';
 
 import { useState, useEffect, useCallback, createContext, useContext } from 'react';
-import type en from './messages/en.json';
+import enMessages from './messages/en.json';
 
 export type Locale = 'en' | 'hi' | 'bn';
-export type Messages = typeof en;
+export type Messages = typeof enMessages;
 
 // Dot-notation key type for type-safe translation keys
 type PathsToStringProps<T> = T extends string
@@ -46,7 +46,7 @@ interface I18nContextValue {
 const I18nContext = createContext<I18nContextValue>({
   locale: 'en',
   setLocale: () => {},
-  messages: null,
+  messages: enMessages as unknown as Record<string, unknown>,
 });
 
 export function resolveInitialLocale(urlSearch?: string, cookieHeader?: string): Locale {
@@ -81,7 +81,7 @@ export function resolveInitialLocale(urlSearch?: string, cookieHeader?: string):
 
 export function I18nProvider({ children }: { children: React.ReactNode }) {
   const [locale, setLocaleState] = useState<Locale>('en');
-  const [messages, setMessages] = useState<Record<string, unknown> | null>(null);
+  const [messages, setMessages] = useState<Record<string, unknown>>(enMessages as unknown as Record<string, unknown>);
 
   useEffect(() => {
     // Read from URL param (precedence 1) or cookie (precedence 2) or default en
@@ -98,9 +98,18 @@ export function I18nProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     async function loadMessages() {
+      if (locale === 'en') {
+        setMessages(enMessages as unknown as Record<string, unknown>);
+        if (typeof document !== 'undefined') {
+          document.documentElement.lang = 'en';
+        }
+        return;
+      }
       const mod = await import(`./messages/${locale}.json`);
       setMessages(mod.default);
-      document.documentElement.lang = locale;
+      if (typeof document !== 'undefined') {
+        document.documentElement.lang = locale;
+      }
     }
     loadMessages();
   }, [locale]);
