@@ -1,0 +1,120 @@
+{
+  "nav": {
+    "map": "Map",
+    "advisories": "Advisories",
+    "outlook": "Outlook",
+    "methodology": "Methodology",
+    "language": "Language",
+    "help": "Help"
+  },
+  "filters": {
+    "search": "Search block or village",
+    "state": "State",
+    "district": "District",
+    "block": "Block",
+    "crop": "Crop",
+    "clear": "Clear",
+    "filters": "Filters",
+    "no_match": "No match. Try a nearby block.",
+    "block_average": "Block average"
+  },
+  "hazards": {
+    "onset": "Monsoon start",
+    "dry_spell": "Dry spell",
+    "heavy_rain": "Heavy rain"
+  },
+  "bands": {
+    "low": "Low",
+    "moderate": "Moderate",
+    "high": "High",
+    "very_high": "Very high"
+  },
+  "verdicts": {
+    "sow_now": "Good time to sow",
+    "wait": "Wait a week",
+    "prepare_irrigation": "Prepare irrigation",
+    "protect_from_rain": "Protect seed from heavy rain",
+    "switch_crop": "Consider a crop that needs less water"
+  },
+  "cards": {
+    "location": {
+      "updated": "Updated {date}, {time} IST",
+      "next_update": "Next update tomorrow morning.",
+      "pin": "Pin this region",
+      "panchayat_estimate": "Estimate",
+      "panchayat_tooltip": "Adjusted for local terrain"
+    },
+    "advisory": {
+      "why": "Why this advice",
+      "share": "Share"
+    },
+    "gauge": {
+      "reliability": {
+        "low": "Low reliability",
+        "medium": "Medium reliability",
+        "high": "High reliability"
+      },
+      "reliability_tooltip": "Forecasts further ahead are less certain.",
+      "week_label": "Week {n}",
+      "days_label": "Days {start}–{end}"
+    }
+  },
+  "help": {
+    "title": "How to read this map",
+    "colours": "Each colour shows the chance of the named weather event. Darker = higher chance.",
+    "probability": "\"72% chance\" means: in 100 years with similar conditions, 72 had this outcome.",
+    "disclaimer": "These are chances, not guarantees. Check with your local agriculture office before big decisions.",
+    "methodology_link": "About our methods →"
+  },
+  "drivers": {
+    "raises": "raises",
+    "lowers": "lowers",
+    "summary_prefix": "This forecast is mainly shaped by",
+    "disclaimer": "These are chances, not guarantees. Check with your local agriculture office before big decisions."
+  },
+  "errors": {
+    "forecast": "Couldn't load the forecast for {region}. Check your connection and try again.",
+    "map_fallback": "Map couldn't load. Showing list view.",
+    "retry": "Try again"
+  },
+  "offline": {
+    "banner": "You're offline. Showing the forecast from {time}."
+  },
+  "demo": {
+    "badge": "Demo data"
+  },
+  "week": {
+    "label": "Week {n}",
+    "label_short": "W{n}"
+  },
+  "crops": {
+    "rice": "Rice",
+    "maize": "Maize",
+    "cotton": "Cotton",
+    "soybean": "Soybean",
+    "groundnut": "Groundnut",
+    "pulses": "Pulses"
+  },
+  "estimate": "Estimate",
+  "chance": "{value}% chance",
+  "select_region": "Select a block to see the forecast",
+  "list_toggle": {
+    "map": "Map",
+    "list": "List"
+  },
+  "list": {
+    "block": "Block",
+    "probability": "Chance",
+    "band": "Level",
+    "no_data": "No data",
+    "showing": "Showing {count} regions"
+  },
+  "legend": {
+    "title": "Risk level",
+    "no_data": "No data"
+  },
+  "share": {
+    "text": "BHUMI advice for {block}: {advice}",
+    "copied": "Copied to clipboard"
+  }
+}

@@ -1,20 +1,31 @@
 import type { MetadataRoute } from 'next';
-import { siteConfig } from '@/config/site';
 
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: `${siteConfig.name} — ${siteConfig.tagline}`,
-    short_name: siteConfig.name,
-    description: siteConfig.description,
+    name: 'BHUMI',
+    short_name: 'BHUMI',
+    description: 'Block-level monsoon onset and break prediction for Indian farmers',
     start_url: '/',
     display: 'standalone',
-    background_color: '#ffffff',
-    theme_color: '#0f172a',
+    background_color: '#F7F6F2',
+    theme_color: '#9DBFC3',
+    orientation: 'portrait',
     icons: [
       {
-        src: '/favicon.ico',
-        sizes: 'any',
-        type: 'image/x-icon',
+        src: '/icon-192.png',
+        sizes: '192x192',
+        type: 'image/png',
+      },
+      {
+        src: '/icon-512.png',
+        sizes: '512x512',
+        type: 'image/png',
+      },
+      {
+        src: '/icon-maskable.png',
+        sizes: '512x512',
+        type: 'image/png',
+        purpose: 'maskable',
       },
     ],
   };
