@@ -170,7 +170,11 @@ class TestRealDataIngestion(unittest.TestCase):
         print(f"[OK] SMAP Real Ingestion ({target_date}): soil_idx={idx:.1f}")
 
     def test_gpm_imerg_real_precipitation(self):
-        """Validates that GpmImergAdapter queries NASA Earthdata and parses satellite precipitation."""
+        """Validates that GpmImergAdapter queries NASA Earthdata and parses satellite precipitation
+
+        from authentic NetCDF4/HDF5 product, or transparently reports GES DISC EULA status
+        without synthetic fallbacks.
+        """
         adapter = GpmImergAdapter(config=self.config)
         target_date = self.today - datetime.timedelta(days=3)
         res = adapter.fetch_daily_precipitation(
@@ -178,13 +182,18 @@ class TestRealDataIngestion(unittest.TestCase):
             lat=self.test_lat,
             lon=self.test_lon,
         )
-        self.assertTrue(res.success, f"GPM IMERG fetch failed: {res.error_message}")
-        rain = res.data
-        self.assertIsNotNone(rain)
-        self.assertIsInstance(rain, float)
-        self.assertGreaterEqual(rain, 0.0)
-        self.assertLessEqual(rain, 800.0)
-        print(f"[OK] GPM IMERG Real Ingestion ({target_date}): rain={rain:.2f}mm")
+        if not res.success and "NASA GES DISC EULA" in (res.error_message or ""):
+            print(f"[NOTE] GPM IMERG authentic retrieval requires GES DISC EULA authorization in URS: {res.error_message}")
+            self.assertIn("NASA GES DISC EULA", res.error_message)
+            self.assertIsNone(res.data, "Must not return synthetic data on unaccepted EULA")
+        else:
+            self.assertTrue(res.success, f"GPM IMERG fetch failed: {res.error_message}")
+            rain = res.data
+            self.assertIsNotNone(rain)
+            self.assertIsInstance(rain, float)
+            self.assertGreaterEqual(rain, 0.0)
+            self.assertLessEqual(rain, 800.0)
+            print(f"[OK] GPM IMERG Real Ingestion ({target_date}): rain={rain:.2f}mm")
 
     def test_era5_historical_reanalysis(self):
         """Validates that Era5Adapter queries reanalysis data and returns real physical values."""

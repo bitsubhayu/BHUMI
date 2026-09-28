@@ -1,25 +1,28 @@
 """Weekly historical synchronization and monthly reconciliation job.
 
-Target Cadence: Runs once weekly (e.g. Sunday 20:00 UTC / Monday 01:30 IST).
-Responsibilities:
-1. Downloads newly available/finalized historical data for the calibrated 12-season archive (2014–2025).
-2. Uses real CHIRPS precipitation, ERA5 reanalysis, and NOAA/BOM teleconnections.
-3. Packs 214-day arrays and writes them to public.seasonal_archives (one row per block-season).
-4. Performs monthly reconciliation pass (swapping preliminary NWP values in live buffer for finalized CHIRPS/ERA5 observations).
-5. Never creates permanent panchayat records.
+Executes as a weekly scheduled task (e.g. Sunday 20:00 UTC):
+1. Ingests historical teleconnection indices (ENSO / IOD / MJO) for the season year span.
+2. Extracts genuine 214-day daily time series (April 1 to October 31):
+   - Real daily rainfall for all 214 dates
+   - Real daily max temperature for all 214 dates
+   - Real daily soil moisture for all 214 dates
+   - Classifies each day from actual observations using classify_daily_weather_state
+   - Packs 4 × smallint[214] arrays into public.seasonal_archives.
+   NEVER repeats a single day across 214 days.
+   NEVER fabricates synthetic constants.
+3. Performs monthly reconciliation pass:
+   - Reconciles preliminary observations (~3 weeks prior) against finalized CHIRPS & ERA5 datasets.
 """
 
 from __future__ import annotations
 
 import argparse
 import datetime
-import sys
 import time
-from typing import Any, Optional
+from typing import Any
 
 import requests
 
-from pipeline.jobs.daily_sync import REPRESENTATIVE_BLOCKS, get_active_blocks
 from pipeline.loaders.supabase_loader import SupabaseLoader
 from pipeline.sources.chirps import ChirpsAdapter
 from pipeline.sources.era5 import Era5Adapter
@@ -29,53 +32,97 @@ from pipeline.transforms.seasonal_pack import pack_seasonal_archive
 from pipeline.utils.config import get_pipeline_config
 from pipeline.utils.logger import get_logger
 
+REPRESENTATIVE_BLOCKS = [
+    {
+        "block_id": "IND_MH_PUN_001",
+        "block_name": "Haveli (Pune)",
+        "district_name": "Pune",
+        "state_name": "Maharashtra",
+        "centroid_lat": 18.5204,
+        "centroid_lon": 73.8567,
+        "elevation_m": 560.0,
+        "slope_deg": 2.1,
+    },
+    {
+        "block_id": "IND_RJ_JOD_001",
+        "block_name": "Mandore (Jodhpur)",
+        "district_name": "Jodhpur",
+        "state_name": "Rajasthan",
+        "centroid_lat": 26.2389,
+        "centroid_lon": 73.0243,
+        "elevation_m": 231.0,
+        "slope_deg": 1.2,
+    },
+]
+
+
+def get_active_blocks(config: Any, sample_only: bool = False) -> list[dict[str, Any]]:
+    """Retrieve blocks to synchronize."""
+    if sample_only or not config.has_supabase:
+        return REPRESENTATIVE_BLOCKS
+
+    url = config.supabase_url.rstrip("/")
+    headers = {
+        "apikey": config.supabase_service_role_key,
+        "Authorization": f"Bearer {config.supabase_service_role_key}",
+    }
+    try:
+        resp = requests.get(
+            f"{url}/rest/v1/blocks?select=block_id,block_name,district_name,state_name,centroid_lat,centroid_lon,elevation_m,slope_deg",
+            headers=headers,
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            blocks = resp.json()
+            if blocks:
+                return blocks
+    except Exception:
+        pass
+
+    return REPRESENTATIVE_BLOCKS
+
 
 def run_weekly_sync(
     start_year: int = 2014,
     end_year: int = 2025,
-    dry_run: bool = False,
     reconcile: bool = True,
+    dry_run: bool = False,
     sample_only: bool = False,
 ) -> int:
-    """Execute weekly historical synchronization job."""
+    """Execute weekly historical sync and monthly reconciliation."""
     config = get_pipeline_config()
     logger = get_logger("bhumi.jobs.weekly_sync")
 
     start_time = time.time()
     logger.info("=" * 64)
-    logger.info("BHUMI Weekly Historical Synchronization Job Starting")
+    logger.info("BHUMI Weekly Historical Sync & Reconciliation Starting")
     logger.info("=" * 64)
-    logger.info(f"Target seasons: {start_year}–{end_year} ({end_year - start_year + 1} seasons)")
-    logger.info(f"Dry-run mode: {dry_run} | Reconcile: {reconcile} | Sample only: {sample_only}")
-    logger.info(f"Supabase endpoint: {config.supabase_url or '<not configured>'}")
+    logger.info(f"Target archive range: {start_year}–{end_year} | Reconcile: {reconcile} | Dry-run: {dry_run}")
 
     loader = SupabaseLoader(config=config, dry_run=dry_run)
 
-    # 1. Ingest Teleconnections Timeseries (National)
-    logger.info("Step 1: Synchronizing global teleconnections (ENSO/IOD/MJO)...")
+    # 1. Ingest Historical Teleconnection Indices (ENSO / IOD / MJO)
+    logger.info("Step 1: Ingesting historical teleconnections (ENSO / IOD / MJO)...")
     tele_adapter = TeleconnectionsAdapter(config=config)
     tele_res = tele_adapter.fetch_historical(start_year=start_year, end_year=end_year)
 
     if tele_res.success and tele_res.data:
         loaded_tele = loader.load_teleconnections(tele_res.data)
-        logger.info(f"[OK] Loaded {loaded_tele} teleconnection daily records into teleconnections_history")
+        logger.info(f"[OK] Ingested {loaded_tele} historical teleconnection daily rows")
     else:
-        logger.warning(f"! Teleconnections sync warning: {tele_res.error_message}")
+        logger.warning(f"! Teleconnections historical update warning: {tele_res.error_message}")
 
-    # 2. Historical Seasonal Archives Ingestion
-    logger.info("Step 2: Processing historical seasonal archives (214-day arrays)...")
+    # 2. Ingest Historical 214-day Seasonal Arrays
+    logger.info("Step 2: Processing genuine 214-day historical seasonal archives...")
     chirps = ChirpsAdapter(config=config)
     era5 = Era5Adapter(config=config)
 
     blocks = get_active_blocks(config, sample_only=sample_only)
-    logger.info(f"Synchronizing historical records for {len(blocks)} blocks...")
-
     if not dry_run and config.has_supabase:
         loader.load_blocks(blocks)
 
     seasonal_records: list[dict[str, Any]] = []
-
-    # For routine weekly sync or sample runs, sync the most recent finalized season (or selected year range)
+    # In sample_only mode, synchronize the most recent finalized season; otherwise range
     sync_years = [end_year - 1] if sample_only else range(start_year, end_year + 1)
 
     for year in sync_years:
@@ -84,21 +131,36 @@ def run_weekly_sync(
             lat = float(block["centroid_lat"])
             lon = float(block["centroid_lon"])
 
-            logger.info(f"Extracting real observations for block {b_id} season {year}...")
+            logger.info(f"Extracting genuine 214-day observations for block {b_id} season {year}...")
 
-            # Retrieve real CHIRPS rainfall (sample 7 days in sample_only mode to optimize runtime)
-            sample_count = 7 if sample_only else 214
-            ch_res = chirps.fetch_seasonal_window(year, lat, lon, sample_days=sample_count)
-            rainfall_series = ch_res.data if ch_res.success and ch_res.data else [0.0] * 214
+            # Retrieve genuine 214-day seasonal time series from ERA5 reanalysis
+            era_seasonal = era5.fetch_seasonal_series(year, lat, lon)
+            if not era_seasonal.success or not era_seasonal.data:
+                logger.error(
+                    f"Required seasonal data unavailable for block {b_id} year {year}: {era_seasonal.error_message}. "
+                    f"Skipping block-season to prevent data fabrication."
+                )
+                continue
 
-            # Retrieve real ERA5 temperatures and soil moisture
-            era_res = era5.fetch_daily_reanalysis(datetime.date(year, 7, 15), lat, lon)
-            max_t = era_res.data["max_temp_c"] if era_res.success and era_res.data else 30.0
-            soil_idx = era_res.data["soil_moisture_idx"] if era_res.success and era_res.data else 45.0
+            temp_series = era_seasonal.data["max_temp_series"]
+            soil_series = era_seasonal.data["soil_moisture_series"]
+            era_rain = era_seasonal.data["rainfall_series"]
 
-            # Construct 214-day series from real physical measurements
-            temp_series = [max_t] * 214
-            soil_series = [soil_idx] * 214
+            # Prefer CHIRPS 0.05° high-resolution rainfall if available, else ERA5 reanalysis rainfall
+            rainfall_series = era_rain
+            if not sample_only:
+                ch_res = chirps.fetch_seasonal_window(year, lat, lon)
+                if ch_res.success and ch_res.data and len(ch_res.data) == 214:
+                    rainfall_series = ch_res.data
+
+            # Verify 214-day cardinality and non-repetition
+            if len(temp_series) != 214 or len(rainfall_series) != 214 or len(soil_series) != 214:
+                logger.error(f"Incomplete series cardinality for {b_id} season {year}. Skipping.")
+                continue
+
+            if len(set(temp_series)) < 15:
+                logger.error(f"Suspicious repeated temperature values in {b_id} season {year}. Skipping.")
+                continue
 
             archive_row = pack_seasonal_archive(
                 block_id=b_id,
@@ -109,8 +171,11 @@ def run_weekly_sync(
             )
             seasonal_records.append(archive_row)
 
-    loaded_archives = loader.load_seasonal_archives(seasonal_records)
-    logger.info(f"[OK] Loaded {loaded_archives} seasonal archive rows into seasonal_archives")
+    if seasonal_records:
+        loaded_archives = loader.load_seasonal_archives(seasonal_records)
+        logger.info(f"[OK] Loaded {loaded_archives} genuine 214-day seasonal archives into seasonal_archives")
+    else:
+        logger.warning("! No seasonal records were packed due to missing upstream data")
 
     # 3. Monthly Reconciliation Pass
     if reconcile:
@@ -128,9 +193,17 @@ def run_weekly_sync(
             ch_recon = chirps.fetch_daily_rainfall(recon_date, lat, lon)
             era_recon = era5.fetch_daily_reanalysis(recon_date, lat, lon)
 
-            final_rain = ch_recon.data if ch_recon.success and ch_recon.data is not None else 0.0
-            final_temp = era_recon.data["max_temp_c"] if era_recon.success and era_recon.data else 30.0
-            final_soil = era_recon.data["soil_moisture_idx"] if era_recon.success and era_recon.data else 45.0
+            # Require valid observations for reconciliation
+            if not ch_recon.success or ch_recon.data is None:
+                logger.warning(f"CHIRPS finalized observation unavailable for reconciliation on {recon_date}. Skipping.")
+                continue
+            if not era_recon.success or not era_recon.data:
+                logger.warning(f"ERA5 reanalysis unavailable for reconciliation on {recon_date}. Skipping.")
+                continue
+
+            final_rain = ch_recon.data
+            final_temp = era_recon.data["max_temp_c"]
+            final_soil = era_recon.data["soil_moisture_idx"]
 
             rec_row = pack_live_buffer_record(
                 block_id=b_id,
@@ -144,8 +217,9 @@ def run_weekly_sync(
             )
             reconciled_records.append(rec_row)
 
-        loaded_reconciled = loader.load_live_weather_buffer(reconciled_records)
-        logger.info(f"[OK] Reconciled {loaded_reconciled} preliminary records with finalized CHIRPS/ERA5 data")
+        if reconciled_records:
+            loaded_reconciled = loader.load_live_weather_buffer(reconciled_records)
+            logger.info(f"[OK] Reconciled {loaded_reconciled} preliminary records with finalized CHIRPS/ERA5 data")
 
     duration = time.time() - start_time
     logger.info("=" * 64)
@@ -158,19 +232,19 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="BHUMI Weekly Historical Sync & Reconciliation Job")
     parser.add_argument("--start-year", type=int, default=2014, help="Historical start year (default: 2014)")
     parser.add_argument("--end-year", type=int, default=2025, help="Historical end year (default: 2025)")
-    parser.add_argument("--dry-run", action="store_true", help="Simulate execution without modifying the database")
-    parser.add_argument("--no-reconcile", action="store_true", help="Skip the monthly reconciliation pass")
-    parser.add_argument("--sample-only", action="store_true", help="Run on a minimal representative sample dataset")
+    parser.add_argument("--reconcile", action="store_true", help="Perform monthly reconciliation pass")
+    parser.add_argument("--dry-run", action="store_true", help="Simulate without writing to database")
+    parser.add_argument("--sample-only", action="store_true", help="Run on representative sample blocks only")
 
     args = parser.parse_args()
-    code = run_weekly_sync(
+    exit_code = run_weekly_sync(
         start_year=args.start_year,
         end_year=args.end_year,
+        reconcile=args.reconcile,
         dry_run=args.dry_run,
-        reconcile=not args.no_reconcile,
         sample_only=args.sample_only,
     )
-    sys.exit(code)
+    exit(exit_code)
 
 
 if __name__ == "__main__":

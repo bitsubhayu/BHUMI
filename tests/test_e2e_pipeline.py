@@ -64,12 +64,12 @@ class TestPipelineEndToEnd(unittest.TestCase):
         self.assertEqual(loaded_blocks, 1)
 
         # 2. Transform & Load 214-day Seasonal Archive Record
-        # Generate 214 daily representative observations (simulating monsoon rainfall curve)
+        # Generate 214 daily representative observations (simulating monsoon rainfall and temperature curves)
         rain_series = [0.0] * 214
         for d in range(60, 150):  # June to August wet season
-            rain_series[d] = 18.5
-        temp_series = [31.5] * 214
-        soil_series = [45.0] * 214
+            rain_series[d] = round(10.0 + 15.0 * ((d - 60) % 10) / 10.0, 1)
+        temp_series = [round(28.0 + 7.0 * (d % 20) / 20.0, 1) for d in range(214)]
+        soil_series = [round(30.0 + 35.0 * (d % 25) / 25.0, 1) for d in range(214)]
 
         seasonal_record = pack_seasonal_archive(
             block_id=self.test_block_id,

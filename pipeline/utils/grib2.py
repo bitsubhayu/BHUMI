@@ -91,7 +91,10 @@ def decode_grib2_grid(data: bytes) -> dict[str, Any]:
         raise Grib2DecodeError(f"Unsupported data representation template {rep_template}, only Template 5.0 supported")
 
     ref_val = struct.unpack(">f", sec5[11:15])[0]
-    bin_scale, dec_scale, nbits = struct.unpack(">hhB", sec5[15:20])
+    b_raw, d_raw, nbits = struct.unpack(">HHB", sec5[15:20])
+    # WMO GRIB2 Section 5 scale factors are sign-magnitude integers
+    bin_scale = -(b_raw & 0x7FFF) if (b_raw & 0x8000) else (b_raw & 0x7FFF)
+    dec_scale = -(d_raw & 0x7FFF) if (d_raw & 0x8000) else (d_raw & 0x7FFF)
 
     if nbits == 0:
         # Constant field across all grid points

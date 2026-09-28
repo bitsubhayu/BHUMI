@@ -12,6 +12,7 @@ pandas>=2.0.0
 python-dateutil>=2.8.2
 pydantic>=2.0.0
 pillow>=10.0.0
+h5py>=3.8.0
 
 # Climate & Remote Sensing Data Access (Optional / Advanced)
 # Used for NetCDF/GRIB extraction and CDS reanalysis

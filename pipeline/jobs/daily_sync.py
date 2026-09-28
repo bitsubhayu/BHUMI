@@ -168,10 +168,27 @@ def run_daily_sync(
             max_temps.append(ecm_res.data["max_temp_c"])
             min_temps.append(ecm_res.data["min_temp_c"])
 
+        # Check if we have at least one valid atmospheric forecast source
+        if not max_temps or not rain_vals:
+            logger.warning(
+                f"All atmospheric forecast sources failed for block {block_id} on {today}. "
+                f"Skipping record creation to prevent data fabrication."
+            )
+            continue
+
         # Real consensus calculations
-        final_rain = round(float(sum(rain_vals) / len(rain_vals)), 2) if rain_vals else 0.0
-        final_max_t = round(float(sum(max_temps) / len(max_temps)), 2) if max_temps else 30.0
+        final_rain = round(float(sum(rain_vals) / len(rain_vals)), 2)
+        final_max_t = round(float(sum(max_temps) / len(max_temps)), 2)
+        final_min_t = round(float(sum(min_temps) / len(min_temps)), 2) if min_temps else round(final_max_t - 6.0, 2)
         final_soil = smap_res.data if (smap_res.success and smap_res.data is not None) else None
+
+        # Data source provenance attribution
+        if gfs_res.success and ecm_res.success:
+            source_tag = "GFS_ECMWF_REAL_CONSENSUS"
+        elif gfs_res.success:
+            source_tag = "NOAA_GFS_REAL"
+        else:
+            source_tag = ecm_res.data.get("data_source", "ECMWF_FALLBACK_OPEN_METEO")
 
         record = pack_live_buffer_record(
             block_id=block_id,
@@ -180,7 +197,7 @@ def run_daily_sync(
             max_temp_c=final_max_t,
             min_temp_c=final_min_t,
             soil_moisture_idx=final_soil,
-            data_source="GFS_ECMWF_CONSENSUS",
+            data_source=source_tag,
             is_preliminary=True,
         )
         live_records.append(record)

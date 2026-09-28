@@ -35,11 +35,15 @@ class GfsAdapter(BaseSourceAdapter):
         return True
 
     def _get_active_gfs_cycle(self, target_date: datetime.date) -> tuple[str, str]:
-        """Find the latest available GFS cycle date string and cycle hour (e.g. '20240926', '00')."""
-        # NOAA NOMADS retains cycles for ~10 days. If target_date is recent, use it;
-        # otherwise use yesterday to ensure the cycle directory is fully published.
-        today = datetime.date.today()
-        ref = target_date if (today - target_date).days <= 7 else (today - datetime.timedelta(days=1))
+        """Find the latest available published GFS cycle date string and cycle hour."""
+        now_utc = datetime.datetime.now(datetime.timezone.utc)
+        # GFS 00z operational cycle is computed and finalized on NOMADS around 03:45 UTC.
+        if target_date >= now_utc.date() and now_utc.hour < 4:
+            ref = now_utc.date() - datetime.timedelta(days=1)
+        elif (now_utc.date() - target_date).days > 7:
+            ref = now_utc.date() - datetime.timedelta(days=1)
+        else:
+            ref = target_date
         return ref.strftime("%Y%m%d"), "00"
 
     def fetch_gfs_field(
@@ -89,17 +93,16 @@ class GfsAdapter(BaseSourceAdapter):
             raw_k = extract_point_from_grib2(tmp_data, lat, lon)
             temp_c = round(raw_k - 273.15, 2)
 
-            # 2. Fetch real Surface Precipitation Rate (PRATE)
-            prate_data = self.fetch_gfs_field(
-                cycle_date_str, cycle_hour, "var_PRATE", "lev_surface"
+            # 2. Fetch real 24-hour Accumulated Precipitation (APCP) in mm
+            apcp_data = self.fetch_gfs_field(
+                cycle_date_str, cycle_hour, "var_APCP", "lev_surface"
             )
-            raw_prate = extract_point_from_grib2(prate_data, lat, lon)
-            # PRATE is kg/(m^2*s) == mm/s. Multiply by 86400 to get 24h daily equivalent in mm
-            daily_rain_mm = round(max(0.0, raw_prate * 86400.0), 2)
+            raw_apcp = extract_point_from_grib2(apcp_data, lat, lon)
+            daily_rain_mm = round(max(0.0, float(raw_apcp)), 2)
 
             self.logger.info(
                 f"Extracted real NOAA GFS forecast for ({lat:.2f}, {lon:.2f}) on {target_date}: "
-                f"temp={temp_c}°C, rain={daily_rain_mm} mm"
+                f"temp={temp_c}°C, accumulated_rain={daily_rain_mm} mm"
             )
 
             return {
