@@ -18,6 +18,7 @@ import {
   evaluateAdvisoryRule,
   normalizeCropType,
   evaluateTriggerCondition,
+  isDefaultTriggerCondition,
   parseConditionClause,
   evaluateClause,
   determineCandidateAction,
@@ -747,9 +748,87 @@ describe('9. Rule Matching & Deterministic Selection', () => {
     assert.equal(resultGroundnut.isGeneralFallback, true);
   });
 
-  it('returns explicit unverified advisory message when no rule matches without fabricating advice', () => {
+  it('matches default rule (ICAR-CRIDA-MONITOR-01) when no other verified active rule matches', () => {
     const result = evaluateAdvisoryRule(dummyPredictionNoTrigger, {
       rules: VERIFIED_ADVISORY_RULES,
+      selectedCrop: 'general',
+      targetLanguage: 'en',
+    });
+
+    assert.equal(result.hasMatchingRule, true);
+    assert.equal(result.ruleCode, 'ICAR-CRIDA-MONITOR-01');
+    assert.equal(result.action, 'monitor_conditions');
+    assert.equal(result.actionType, 'monitor_conditions');
+    assert.equal(result.icarReferenceCode, 'ICAR-CRIDA-KHARIF-STD-05');
+    assert.match(result.template.title, /Normal Seasonal Monitoring/i);
+    assert.ok(result.template.suggested_measures.length > 0);
+  });
+
+  it('matching non-default rule always beats the default rule', () => {
+    const result = evaluateAdvisoryRule(dummyPredictionBreak, {
+      rules: VERIFIED_ADVISORY_RULES,
+      selectedCrop: 'general',
+      targetLanguage: 'en',
+    });
+
+    assert.equal(result.hasMatchingRule, true);
+    assert.equal(result.ruleCode, 'ICAR-CRIDA-DELAY-01');
+    assert.equal(result.action, 'delay_sowing');
+    assert.notEqual(result.ruleCode, 'ICAR-CRIDA-MONITOR-01');
+  });
+
+  it('crop-specific matching rule beats a general default rule', () => {
+    const result = evaluateAdvisoryRule(dummyPredictionOnset, {
+      rules: VERIFIED_ADVISORY_RULES,
+      selectedCrop: 'paddy',
+      targetLanguage: 'en',
+    });
+
+    assert.equal(result.hasMatchingRule, true);
+    assert.equal(result.ruleCode, 'ICAR-NRRI-PAD-SOW-01');
+    assert.equal(result.cropType, 'paddy');
+    assert.notEqual(result.ruleCode, 'ICAR-CRIDA-MONITOR-01');
+  });
+
+  it('strictly ignores an inactive default rule and falls back to NO_VERIFIED_RULE', () => {
+    const inactiveDefaultRule = {
+      rule_code: 'INACTIVE-DEFAULT-RULE',
+      crop_category: 'general',
+      action_type: 'monitor_conditions',
+      trigger_condition: 'default',
+      english_title: 'Inactive Monitor',
+      english_recommendation: 'Inactive rec',
+      suggested_measures: [],
+      is_active: false,
+      icar_reference_code: 'ICAR-INACTIVE-DEFAULT',
+      created_at: '2026-09-28T00:00:00Z',
+      updated_at: '2026-09-28T00:00:00Z',
+    };
+
+    const nonDefaultRules = VERIFIED_ADVISORY_RULES.filter(
+      (r) => (r.trigger_condition || '').toLowerCase() !== 'default'
+    );
+
+    const result = evaluateAdvisoryRule(dummyPredictionNoTrigger, {
+      rules: [inactiveDefaultRule, ...nonDefaultRules],
+      selectedCrop: 'general',
+      targetLanguage: 'en',
+    });
+
+    assert.equal(result.hasMatchingRule, false);
+    assert.equal(result.ruleCode, 'NO_VERIFIED_RULE');
+    assert.equal(result.action, null);
+    assert.equal(result.icarReferenceCode, null);
+    assert.equal(result.template.title, 'No verified advisory rule is available for this forecast.');
+  });
+
+  it('returns explicit NO_VERIFIED_RULE state when no non-default matches and no active default exists', () => {
+    const nonDefaultRules = VERIFIED_ADVISORY_RULES.filter(
+      (r) => (r.trigger_condition || '').toLowerCase() !== 'default'
+    );
+
+    const result = evaluateAdvisoryRule(dummyPredictionNoTrigger, {
+      rules: nonDefaultRules,
       selectedCrop: 'general',
       targetLanguage: 'en',
     });
@@ -780,6 +859,10 @@ describe('9. Rule Matching & Deterministic Selection', () => {
   });
 
   it('does not select a rule merely because action_type or advisory_code matches when trigger_condition is not met', () => {
+    const nonDefaultRules = VERIFIED_ADVISORY_RULES.filter(
+      (r) => (r.trigger_condition || '').toLowerCase() !== 'default'
+    );
+
     const predWithActionCode = {
       ...dummyPredictionNoTrigger,
       advisory_code: 'delay_sowing',
@@ -788,7 +871,7 @@ describe('9. Rule Matching & Deterministic Selection', () => {
     };
 
     const result = evaluateAdvisoryRule(predWithActionCode, {
-      rules: VERIFIED_ADVISORY_RULES,
+      rules: nonDefaultRules,
       selectedCrop: 'general',
       targetLanguage: 'en',
     });
@@ -796,6 +879,16 @@ describe('9. Rule Matching & Deterministic Selection', () => {
     assert.equal(result.hasMatchingRule, false);
     assert.equal(result.ruleCode, 'NO_VERIFIED_RULE');
     assert.equal(result.template.title, 'No verified advisory rule is available for this forecast.');
+  });
+
+  it('correctly identifies default trigger condition and safely ignores non-default', () => {
+    assert.equal(isDefaultTriggerCondition('default'), true);
+    assert.equal(isDefaultTriggerCondition('DEFAULT'), true);
+    assert.equal(isDefaultTriggerCondition('  default  '), true);
+    assert.equal(isDefaultTriggerCondition('break_probability >= 50'), false);
+    assert.equal(isDefaultTriggerCondition(null), false);
+    assert.equal(isDefaultTriggerCondition(undefined), false);
+    assert.equal(isDefaultTriggerCondition(''), false);
   });
 
   it('strictly avoids eval(), Function(), or unsafe arbitrary expression execution in engine source', async () => {

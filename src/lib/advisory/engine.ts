@@ -181,6 +181,15 @@ export function evaluateClause(
 }
 
 /**
+ * Checks if a trigger condition literally represents the fallback 'default' rule.
+ * Only the exact literal recognized 'default' string (case-insensitive) receives this behavior.
+ */
+export function isDefaultTriggerCondition(triggerCondition?: string | null): boolean {
+  if (!triggerCondition) return false;
+  return triggerCondition.trim().toLowerCase() === 'default';
+}
+
+/**
  * Evaluates full trigger_condition string safely against a prediction row.
  * Supports AND combinations of comparison and IN clauses.
  *
@@ -192,7 +201,9 @@ export function evaluateTriggerCondition(
 ): boolean {
   if (!prediction || !triggerCondition) return false;
   const trimmed = triggerCondition.trim();
-  if (!trimmed || trimmed.toLowerCase() === 'default') return false;
+  // 'default' condition does not evaluate dynamically in clause matching;
+  // it is resolved deterministically by the rule engine as fallback when no condition matches.
+  if (!trimmed || isDefaultTriggerCondition(trimmed)) return false;
 
   const rawClauses = trimmed.split(/\s+AND\s+/i);
   if (rawClauses.length === 0) return false;
@@ -322,7 +333,18 @@ export function evaluateAdvisoryRule(
   // 3. Filter active rules only (ignore inactive rules)
   const activeRules = rules.filter((r) => Boolean(r.is_active));
 
-  // 4. Evaluate trigger_condition for each active rule
+  const activeNonDefaultRules: AdvisoryRuleRow[] = [];
+  const activeDefaultRules: AdvisoryRuleRow[] = [];
+
+  for (const rule of activeRules) {
+    if (isDefaultTriggerCondition(rule.trigger_condition)) {
+      activeDefaultRules.push(rule);
+    } else {
+      activeNonDefaultRules.push(rule);
+    }
+  }
+
+  // 4. Evaluate trigger_condition for active non-default rules
   interface CandidateMatch {
     rule: AdvisoryRuleRow;
     isCropSpecific: boolean;
@@ -330,7 +352,7 @@ export function evaluateAdvisoryRule(
 
   const matchingCandidates: CandidateMatch[] = [];
 
-  for (const rule of activeRules) {
+  for (const rule of activeNonDefaultRules) {
     const isConditionMet = evaluateTriggerCondition(prediction, rule.trigger_condition);
     if (!isConditionMet) {
       continue;
@@ -347,7 +369,7 @@ export function evaluateAdvisoryRule(
     }
   }
 
-  // Priority sorting:
+  // Priority sorting for non-default matches:
   // 1. Crop-specific matching rules before general rules
   // 2. Deterministic tie-break using rule_code
   matchingCandidates.sort((a, b) => {
@@ -357,8 +379,37 @@ export function evaluateAdvisoryRule(
     return a.rule.rule_code.localeCompare(b.rule.rule_code);
   });
 
-  const matchedRule: AdvisoryRuleRow | undefined = matchingCandidates[0]?.rule;
-  const isCropSpecific = matchingCandidates[0]?.isCropSpecific ?? false;
+  let matchedRule: AdvisoryRuleRow | undefined = matchingCandidates[0]?.rule;
+  let isCropSpecific = matchingCandidates[0]?.isCropSpecific ?? false;
+
+  // C. If no non-default rule matches, evaluate/select an active default rule
+  if (!matchedRule && activeDefaultRules.length > 0) {
+    const defaultCandidates: CandidateMatch[] = [];
+
+    for (const rule of activeDefaultRules) {
+      const ruleCrop = (rule.crop_category || 'general').toLowerCase().trim();
+      const isTargetCropMatch = targetCrop !== 'general' && ruleCrop === targetCrop;
+      const isGeneralMatch = ruleCrop === 'general' || ruleCrop === 'kharif_general';
+
+      if (isTargetCropMatch) {
+        defaultCandidates.push({ rule, isCropSpecific: true });
+      } else if (isGeneralMatch) {
+        defaultCandidates.push({ rule, isCropSpecific: false });
+      }
+    }
+
+    defaultCandidates.sort((a, b) => {
+      if (a.isCropSpecific !== b.isCropSpecific) {
+        return a.isCropSpecific ? -1 : 1;
+      }
+      return a.rule.rule_code.localeCompare(b.rule.rule_code);
+    });
+
+    if (defaultCandidates.length > 0) {
+      matchedRule = defaultCandidates[0].rule;
+      isCropSpecific = defaultCandidates[0].isCropSpecific;
+    }
+  }
 
   // 5. Handle no verified rule match
   if (!matchedRule) {
