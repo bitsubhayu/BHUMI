@@ -23,13 +23,14 @@ import requests
 from pipeline.loaders.supabase_loader import SupabaseLoader
 from pipeline.sources.ecmwf import EcmwfAdapter
 from pipeline.sources.gfs import GfsAdapter
+from pipeline.sources.gpm_imerg import GpmImergAdapter
 from pipeline.sources.smap import SmapAdapter
 from pipeline.sources.teleconnections import TeleconnectionsAdapter
 from pipeline.transforms.buffer_pack import pack_live_buffer_record
 from pipeline.utils.config import get_pipeline_config
 from pipeline.utils.logger import get_logger
 
-# Representative fallback blocks across diverse Indian agro-climatic zones
+# Representative sample blocks across diverse Indian agro-climatic zones (for intentional test/sample mode only)
 REPRESENTATIVE_BLOCKS = [
     {
         "block_id": "IND_MH_PUN_001",
@@ -71,9 +72,19 @@ REPRESENTATIVE_BLOCKS = [
 
 
 def get_active_blocks(config: Any, sample_only: bool = False) -> list[dict[str, Any]]:
-    """Retrieve blocks from Supabase or fallback to representative sample blocks."""
-    if sample_only or not config.has_supabase:
+    """Retrieve blocks from Supabase or fail clearly in production.
+
+    In production mode (sample_only=False), failure to retrieve blocks from Supabase
+    raises a RuntimeError rather than silently falling back to sample blocks.
+    """
+    if sample_only:
         return REPRESENTATIVE_BLOCKS
+
+    if not config.has_supabase:
+        raise RuntimeError(
+            "Supabase credentials not configured for production run. "
+            "Pass --sample-only to run on representative sample blocks."
+        )
 
     url = config.supabase_url.rstrip("/")
     headers = {
@@ -84,16 +95,26 @@ def get_active_blocks(config: Any, sample_only: bool = False) -> list[dict[str, 
         resp = requests.get(
             f"{url}/rest/v1/blocks?select=block_id,block_name,district_name,state_name,centroid_lat,centroid_lon,elevation_m,slope_deg",
             headers=headers,
-            timeout=10,
+            timeout=15,
         )
         if resp.status_code == 200:
             blocks = resp.json()
-            if blocks:
+            if blocks and len(blocks) > 0:
                 return blocks
-    except Exception:
-        pass
-
-    return REPRESENTATIVE_BLOCKS
+            raise RuntimeError(
+                "Supabase returned an empty public.blocks table for production run. "
+                "Register administrative blocks or pass --sample-only for sample execution."
+            )
+        else:
+            raise RuntimeError(
+                f"Failed to fetch production blocks from Supabase (HTTP {resp.status_code}: {resp.text[:200]}). "
+                f"Pass --sample-only for sample execution."
+            )
+    except requests.RequestException as e:
+        raise RuntimeError(
+            f"Network error querying production blocks from Supabase: {e}. "
+            f"Pass --sample-only for sample execution."
+        )
 
 
 def run_daily_sync(
@@ -130,12 +151,13 @@ def run_daily_sync(
     gfs = GfsAdapter(config=config)
     ecmwf = EcmwfAdapter(config=config)
     smap = SmapAdapter(config=config)
+    gpm = GpmImergAdapter(config=config)
 
     blocks = get_active_blocks(config, sample_only=sample_only)
     logger.info(f"Processing live observations for {len(blocks)} blocks...")
 
-    # Ensure parent blocks exist in database if running against live DB
-    if not dry_run and config.has_supabase:
+    # Ensure parent blocks exist in database if running against live DB in sample mode
+    if not dry_run and config.has_supabase and sample_only:
         loader.load_blocks(blocks)
 
     today = datetime.date.today()
@@ -152,21 +174,33 @@ def run_daily_sync(
         ecm_res = ecmwf.fetch_daily_forecast(today, lat, lon)
         # Fetch real NASA SMAP soil moisture
         smap_res = smap.fetch_soil_wetness_index(today, lat, lon)
+        # Fetch real NASA GPM IMERG satellite precipitation (Early run ~4h lag for live buffer)
+        gpm_res = gpm.fetch_daily_precipitation(today, lat, lon, is_early_run=True)
 
         # Synthesize multi-model consensus
         rain_vals = []
+        rain_sources = []
         max_temps = []
         min_temps = []
 
         if gfs_res.success and gfs_res.data:
             rain_vals.append(gfs_res.data["rainfall_mm"])
+            rain_sources.append("GFS")
             max_temps.append(gfs_res.data["max_temp_c"])
             min_temps.append(gfs_res.data["min_temp_c"])
 
         if ecm_res.success and ecm_res.data:
             rain_vals.append(ecm_res.data["rainfall_mm"])
+            rain_sources.append("ECMWF")
             max_temps.append(ecm_res.data["max_temp_c"])
             min_temps.append(ecm_res.data["min_temp_c"])
+
+        if gpm_res.success and gpm_res.data is not None:
+            rain_vals.append(gpm_res.data)
+            rain_sources.append("GPM")
+            logger.info(f"Incorporating authentic NASA GPM IMERG precipitation for block {block_id}: {gpm_res.data} mm")
+        elif not gpm_res.success:
+            logger.info(f"GPM IMERG early observation unavailable for {block_id} on {today}: {gpm_res.error_message}")
 
         # Check if we have at least one valid atmospheric forecast source
         if not max_temps or not rain_vals:
@@ -183,12 +217,22 @@ def run_daily_sync(
         final_soil = smap_res.data if (smap_res.success and smap_res.data is not None) else None
 
         # Data source provenance attribution
-        if gfs_res.success and ecm_res.success:
+        if "GPM" in rain_sources and "GFS" in rain_sources and "ECMWF" in rain_sources:
+            source_tag = "GPM_GFS_ECMWF_REAL_CONSENSUS"
+        elif "GPM" in rain_sources and "GFS" in rain_sources:
+            source_tag = "GPM_GFS_REAL_CONSENSUS"
+        elif "GPM" in rain_sources and "ECMWF" in rain_sources:
+            source_tag = "GPM_ECMWF_REAL_CONSENSUS"
+        elif "GPM" in rain_sources:
+            source_tag = "NASA_GPM_IMERG_REAL"
+        elif "GFS" in rain_sources and "ECMWF" in rain_sources:
             source_tag = "GFS_ECMWF_REAL_CONSENSUS"
-        elif gfs_res.success:
+        elif "GFS" in rain_sources:
             source_tag = "NOAA_GFS_REAL"
-        else:
+        elif "ECMWF" in rain_sources:
             source_tag = ecm_res.data.get("data_source", "ECMWF_FALLBACK_OPEN_METEO")
+        else:
+            source_tag = "GFS_ECMWF_REAL_CONSENSUS"
 
         record = pack_live_buffer_record(
             block_id=block_id,

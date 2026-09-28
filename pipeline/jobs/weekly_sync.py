@@ -26,6 +26,7 @@ import requests
 from pipeline.loaders.supabase_loader import SupabaseLoader
 from pipeline.sources.chirps import ChirpsAdapter
 from pipeline.sources.era5 import Era5Adapter
+from pipeline.sources.gpm_imerg import GpmImergAdapter
 from pipeline.sources.teleconnections import TeleconnectionsAdapter
 from pipeline.transforms.buffer_pack import pack_live_buffer_record
 from pipeline.transforms.seasonal_pack import pack_seasonal_archive
@@ -57,9 +58,19 @@ REPRESENTATIVE_BLOCKS = [
 
 
 def get_active_blocks(config: Any, sample_only: bool = False) -> list[dict[str, Any]]:
-    """Retrieve blocks to synchronize."""
-    if sample_only or not config.has_supabase:
+    """Retrieve blocks to synchronize, or fail clearly in production.
+
+    In production mode (sample_only=False), failure to retrieve blocks from Supabase
+    raises a RuntimeError rather than silently falling back to sample blocks.
+    """
+    if sample_only:
         return REPRESENTATIVE_BLOCKS
+
+    if not config.has_supabase:
+        raise RuntimeError(
+            "Supabase credentials not configured for production run. "
+            "Pass --sample-only to run on representative sample blocks."
+        )
 
     url = config.supabase_url.rstrip("/")
     headers = {
@@ -70,16 +81,26 @@ def get_active_blocks(config: Any, sample_only: bool = False) -> list[dict[str, 
         resp = requests.get(
             f"{url}/rest/v1/blocks?select=block_id,block_name,district_name,state_name,centroid_lat,centroid_lon,elevation_m,slope_deg",
             headers=headers,
-            timeout=10,
+            timeout=15,
         )
         if resp.status_code == 200:
             blocks = resp.json()
-            if blocks:
+            if blocks and len(blocks) > 0:
                 return blocks
-    except Exception:
-        pass
-
-    return REPRESENTATIVE_BLOCKS
+            raise RuntimeError(
+                "Supabase returned an empty public.blocks table for production run. "
+                "Register administrative blocks or pass --sample-only for sample execution."
+            )
+        else:
+            raise RuntimeError(
+                f"Failed to fetch production blocks from Supabase (HTTP {resp.status_code}: {resp.text[:200]}). "
+                f"Pass --sample-only for sample execution."
+            )
+    except requests.RequestException as e:
+        raise RuntimeError(
+            f"Network error querying production blocks from Supabase: {e}. "
+            f"Pass --sample-only for sample execution."
+        )
 
 
 def run_weekly_sync(
@@ -116,9 +137,10 @@ def run_weekly_sync(
     logger.info("Step 2: Processing genuine 214-day historical seasonal archives...")
     chirps = ChirpsAdapter(config=config)
     era5 = Era5Adapter(config=config)
+    gpm = GpmImergAdapter(config=config)
 
     blocks = get_active_blocks(config, sample_only=sample_only)
-    if not dry_run and config.has_supabase:
+    if not dry_run and config.has_supabase and sample_only:
         loader.load_blocks(blocks)
 
     seasonal_records: list[dict[str, Any]] = []
@@ -182,7 +204,7 @@ def run_weekly_sync(
         logger.info("Step 3: Executing monthly reconciliation pass on preliminary live observations...")
         reconciled_records: list[dict[str, Any]] = []
 
-        # Find preliminary observations from ~3 weeks ago and swap in finalized CHIRPS data
+        # Find preliminary observations from ~3 weeks ago (CHIRPS latency) and finalized GPM (~3.5 months lag)
         recon_date = datetime.date.today() - datetime.timedelta(days=21)
 
         for block in blocks:
@@ -190,20 +212,48 @@ def run_weekly_sync(
             lat = float(block["centroid_lat"])
             lon = float(block["centroid_lon"])
 
+            # 1. Fetch finalized CHIRPS 0.05° daily rainfall
             ch_recon = chirps.fetch_daily_rainfall(recon_date, lat, lon)
+            # 2. Fetch authentic NASA GPM IMERG Final Run (is_early_run=False -> GPM_3IMERGDF)
+            gpm_recon = gpm.fetch_daily_precipitation(recon_date, lat, lon, is_early_run=False)
+            # 3. Fetch finalized ERA5 reanalysis
             era_recon = era5.fetch_daily_reanalysis(recon_date, lat, lon)
 
-            # Require valid observations for reconciliation
-            if not ch_recon.success or ch_recon.data is None:
-                logger.warning(f"CHIRPS finalized observation unavailable for reconciliation on {recon_date}. Skipping.")
-                continue
+            # Require valid temperature and soil moisture from reanalysis
             if not era_recon.success or not era_recon.data:
-                logger.warning(f"ERA5 reanalysis unavailable for reconciliation on {recon_date}. Skipping.")
+                logger.warning(f"ERA5 reanalysis unavailable for reconciliation on {recon_date}. Skipping block {b_id}.")
                 continue
 
-            final_rain = ch_recon.data
             final_temp = era_recon.data["max_temp_c"]
             final_soil = era_recon.data["soil_moisture_idx"]
+
+            # Reconcile precipitation using available finalized satellite products
+            recon_rain_vals = []
+            recon_sources = []
+
+            if ch_recon.success and ch_recon.data is not None:
+                recon_rain_vals.append(ch_recon.data)
+                recon_sources.append("CHIRPS")
+
+            if gpm_recon.success and gpm_recon.data is not None:
+                recon_rain_vals.append(gpm_recon.data)
+                recon_sources.append("GPM_FINAL")
+                logger.info(f"Incorporating authentic NASA GPM IMERG Final reconciliation precipitation for {b_id}: {gpm_recon.data} mm")
+            elif not gpm_recon.success:
+                logger.info(f"GPM IMERG Final run observation unavailable for reconciliation on {recon_date}: {gpm_recon.error_message}")
+
+            if not recon_rain_vals:
+                logger.warning(f"Both CHIRPS and GPM Final observations unavailable for reconciliation on {recon_date}. Skipping block {b_id}.")
+                continue
+
+            final_rain = round(float(sum(recon_rain_vals) / len(recon_rain_vals)), 2)
+
+            if "CHIRPS" in recon_sources and "GPM_FINAL" in recon_sources:
+                recon_tag = "CHIRPS_GPM_FINAL_RECONCILED"
+            elif "GPM_FINAL" in recon_sources:
+                recon_tag = "GPM_FINAL_RECONCILED"
+            else:
+                recon_tag = "CHIRPS_FINAL_RECONCILED"
 
             rec_row = pack_live_buffer_record(
                 block_id=b_id,
@@ -212,7 +262,7 @@ def run_weekly_sync(
                 max_temp_c=final_temp,
                 min_temp_c=round(final_temp - 6.0, 2),
                 soil_moisture_idx=final_soil,
-                data_source="CHIRPS_FINAL_RECONCILED",
+                data_source=recon_tag,
                 is_preliminary=False,  # Reconciled to ground/satellite finalized truth
             )
             reconciled_records.append(rec_row)

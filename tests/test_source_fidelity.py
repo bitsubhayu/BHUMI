@@ -264,6 +264,71 @@ class TestSourceFidelityAndIntegrity(unittest.TestCase):
             f"Expected > 20 unique daily rainfall amounts across 214 days, got {unique_rains}",
         )
 
+    def test_production_blocks_fail_without_silent_sample_fallback(self):
+        """Verifies that daily_sync and weekly_sync fail clearly in production
+
+        when Supabase blocks cannot be retrieved, rather than silently falling back
+        to representative sample blocks.
+        """
+        from pipeline.jobs.daily_sync import get_active_blocks as daily_get_blocks
+        from pipeline.jobs.weekly_sync import get_active_blocks as weekly_get_blocks
+
+        # 1. When sample_only=True, representative sample blocks are returned
+        daily_sample = daily_get_blocks(self.config, sample_only=True)
+        weekly_sample = weekly_get_blocks(self.config, sample_only=True)
+        self.assertEqual(len(daily_sample), 3)
+        self.assertEqual(len(weekly_sample), 2)
+
+        # 2. When sample_only=False and Supabase is not configured or query fails,
+        # it MUST raise RuntimeError, NEVER silently fall back
+        mock_unconfigured = MagicMock()
+        mock_unconfigured.has_supabase = False
+
+        with self.assertRaises(RuntimeError) as ctx1:
+            daily_get_blocks(mock_unconfigured, sample_only=False)
+        self.assertIn("Pass --sample-only", str(ctx1.exception))
+
+        with self.assertRaises(RuntimeError) as ctx2:
+            weekly_get_blocks(mock_unconfigured, sample_only=False)
+        self.assertIn("Pass --sample-only", str(ctx2.exception))
+
+    def test_daily_sync_incorporates_gpm_imerg(self):
+        """Verifies that daily_sync imports and invokes GpmImergAdapter
+
+        and attributes GPM in data_source provenance.
+        """
+        import pipeline.jobs.daily_sync as daily_mod
+
+        # Verify GpmImergAdapter is imported
+        self.assertTrue(hasattr(daily_mod, "GpmImergAdapter"))
+
+        # Verify source code calls gpm.fetch_daily_precipitation with is_early_run=True
+        with open(os.path.join(os.path.dirname(__file__), "..", "pipeline", "jobs", "daily_sync.py"), "r", encoding="utf-8") as f:
+            code = f.read()
+
+        self.assertIn("gpm = GpmImergAdapter(config=config)", code)
+        self.assertIn("gpm.fetch_daily_precipitation", code)
+        self.assertIn("is_early_run=True", code)
+        self.assertIn("GPM_GFS_ECMWF_REAL_CONSENSUS", code)
+
+    def test_weekly_sync_incorporates_gpm_imerg_final(self):
+        """Verifies that weekly_sync invokes GpmImergAdapter for Final run reconciliation
+
+        and attributes GPM Final in data_source provenance.
+        """
+        import pipeline.jobs.weekly_sync as weekly_mod
+
+        # Verify GpmImergAdapter is imported
+        self.assertTrue(hasattr(weekly_mod, "GpmImergAdapter"))
+
+        # Verify source code calls gpm.fetch_daily_precipitation with is_early_run=False
+        with open(os.path.join(os.path.dirname(__file__), "..", "pipeline", "jobs", "weekly_sync.py"), "r", encoding="utf-8") as f:
+            code = f.read()
+
+        self.assertIn("gpm = GpmImergAdapter(config=config)", code)
+        self.assertIn("is_early_run=False", code)
+        self.assertIn("CHIRPS_GPM_FINAL_RECONCILED", code)
+
 
 if __name__ == "__main__":
     unittest.main()
