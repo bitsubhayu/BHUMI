@@ -1,14 +1,20 @@
 /**
  * BHUMI Rule-Based Crop Advisory Engine
  *
- * Maps calibrated probabilistic predictions to verified ICAR/KVK agronomic actions
- * and static multilingual templates.
+ * Sourced directly from public.advisory_rules.trigger_condition.
+ * Evaluates verified ICAR/KVK Kharif contingency rules deterministically against
+ * calibrated probabilistic forecasts without hardcoded threshold duplication.
  *
  * Guarantees:
- * - Deterministic rule matching (no runtime ML inference or translation calls).
- * - Priority: Crop-specific verified rule -> General Kharif verified rule -> No-match state.
- * - Inactive rules are strictly ignored.
- * - When no verified rule matches, returns explicit "No verified advisory rule is available for this forecast."
+ * - Authoritative trigger_condition evaluation (DSL supporting numeric comparisons, lead_time_bucket IN, AND clauses).
+ * - Zero eval(), Function(), or dynamic code execution.
+ * - Strict rule priority:
+ *     1. Active + trigger_condition matches + crop-specific rule
+ *     2. Active + trigger_condition matches + general/kharif_general rule
+ *     3. Deterministic tie-break using rule_code
+ * - Inactive rules (is_active: false) are strictly ignored.
+ * - When no verified rule matches, returns exactly:
+ *     "No verified advisory rule is available for this forecast."
  * - Preserves prediction provenance and experimental tier.
  */
 
@@ -50,14 +56,175 @@ export function normalizeCropType(rawCrop?: string | null): CropType {
   }
 }
 
+export interface ParsedComparisonClause {
+  type: 'comparison';
+  field: string;
+  operator: '>=' | '<=' | '>' | '<' | '=' | '==' | '!=';
+  targetValue: number;
+}
+
+export interface ParsedInClause {
+  type: 'in';
+  field: string;
+  allowedValues: string[];
+}
+
+export type ParsedConditionClause = ParsedComparisonClause | ParsedInClause;
+
 /**
- * Evaluates candidate agronomic action type based on probabilistic thresholds
- * established in ICAR / KVK Kharif guidance and pipeline driver attribution.
+ * Safely parses a single condition clause without eval or regex vulnerabilities.
+ */
+export function parseConditionClause(rawClause: string): ParsedConditionClause | null {
+  const clause = rawClause.trim();
+  if (!clause) return null;
+
+  // 1. IN clause: `field IN (val1, val2, ...)`
+  const inMatch = clause.match(/^([a-zA-Z0-9_]+)\s+IN\s*\(([^)]+)\)$/i);
+  if (inMatch) {
+    const field = inMatch[1].toLowerCase().trim();
+    const rawValues = inMatch[2];
+    const allowedValues = rawValues
+      .split(',')
+      .map((s) => s.trim().replace(/^['"]|['"]$/g, '').toLowerCase())
+      .filter((s) => s.length > 0);
+
+    return {
+      type: 'in',
+      field,
+      allowedValues,
+    };
+  }
+
+  // 2. Comparison clause: `field op number`
+  const compMatch = clause.match(
+    /^([a-zA-Z0-9_]+)\s*(>=|<=|>|<|==|=|!=)\s*([+-]?[0-9]+(?:\.[0-9]+)?)$/
+  );
+  if (compMatch) {
+    const field = compMatch[1].toLowerCase().trim();
+    const operator = compMatch[2] as ParsedComparisonClause['operator'];
+    const targetValue = parseFloat(compMatch[3]);
+
+    if (!Number.isFinite(targetValue)) return null;
+
+    return {
+      type: 'comparison',
+      field,
+      operator,
+      targetValue,
+    };
+  }
+
+  return null;
+}
+
+/**
+ * Evaluates a single parsed clause against prediction data.
+ */
+export function evaluateClause(
+  clause: ParsedConditionClause,
+  prediction: LivePredictionRow
+): boolean {
+  if (clause.type === 'in') {
+    if (clause.field === 'lead_time_bucket') {
+      const actualVal = (prediction.lead_time_bucket || '').toLowerCase().trim();
+      return clause.allowedValues.includes(actualVal);
+    }
+    return false;
+  }
+
+  if (clause.type === 'comparison') {
+    let actualVal: number | null = null;
+    switch (clause.field) {
+      case 'break_probability':
+        actualVal = prediction.break_probability;
+        break;
+      case 'onset_probability':
+        actualVal = prediction.onset_probability;
+        break;
+      case 'heavy_spell_probability':
+        actualVal = prediction.heavy_spell_probability;
+        break;
+      case 'calibrated_confidence':
+        actualVal = prediction.calibrated_confidence;
+        break;
+      case 'teleconnection_analog_year':
+        actualVal = prediction.teleconnection_analog_year;
+        break;
+      default:
+        return false;
+    }
+
+    if (actualVal === null || actualVal === undefined || !Number.isFinite(actualVal)) {
+      return false;
+    }
+
+    switch (clause.operator) {
+      case '>=':
+        return actualVal >= clause.targetValue;
+      case '<=':
+        return actualVal <= clause.targetValue;
+      case '>':
+        return actualVal > clause.targetValue;
+      case '<':
+        return actualVal < clause.targetValue;
+      case '=':
+      case '==':
+        return Math.abs(actualVal - clause.targetValue) < 1e-6;
+      case '!=':
+        return Math.abs(actualVal - clause.targetValue) >= 1e-6;
+      default:
+        return false;
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Evaluates full trigger_condition string safely against a prediction row.
+ * Supports AND combinations of comparison and IN clauses.
+ *
+ * Security: ZERO eval(), Function(), or dynamic execution.
+ */
+export function evaluateTriggerCondition(
+  prediction: LivePredictionRow | null | undefined,
+  triggerCondition?: string | null
+): boolean {
+  if (!prediction || !triggerCondition) return false;
+  const trimmed = triggerCondition.trim();
+  if (!trimmed || trimmed.toLowerCase() === 'default') return false;
+
+  const rawClauses = trimmed.split(/\s+AND\s+/i);
+  if (rawClauses.length === 0) return false;
+
+  for (const raw of rawClauses) {
+    const parsed = parseConditionClause(raw);
+    if (!parsed) {
+      // Unrecognized clause syntax fails safely to false
+      return false;
+    }
+    if (!evaluateClause(parsed, prediction)) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+/**
+ * Resolves candidate agronomic action without hardcoded threshold values.
+ *
+ * Sourced directly from matched rule's action_type or explicit prediction advisory_code.
+ * Contains ZERO hardcoded probability numbers.
  */
 export function determineCandidateAction(
-  prediction: LivePredictionRow
-): AgronomicActionType {
-  // If prediction already has an explicit advisory code matching standard actions
+  prediction: LivePredictionRow,
+  matchedRule?: AdvisoryRuleRow | null
+): AgronomicActionType | null {
+  if (matchedRule && matchedRule.action_type) {
+    return matchedRule.action_type;
+  }
+
   if (prediction.advisory_code) {
     const raw = prediction.advisory_code.replace(/^exp_/, '').trim().toLowerCase();
     if (
@@ -71,33 +238,7 @@ export function determineCandidateAction(
     }
   }
 
-  const breakProb = typeof prediction.break_probability === 'number' ? prediction.break_probability : 0;
-  const onsetProb = typeof prediction.onset_probability === 'number' ? prediction.onset_probability : 0;
-  const heavyProb = typeof prediction.heavy_spell_probability === 'number' ? prediction.heavy_spell_probability : 0;
-  const leadBucket = prediction.lead_time_bucket || 'week_1';
-
-  // 1. Dry break hazard during early vegetative window (Week 1–2)
-  if (breakProb >= 50.0 && (leadBucket === 'week_1' || leadBucket === 'week_2')) {
-    return 'delay_sowing';
-  }
-
-  // 2. Heavy downpour & waterlogging hazard
-  if (heavyProb >= 40.0) {
-    return 'drainage_alert';
-  }
-
-  // 3. Favorable onset & optimal seedbed moisture
-  if (onsetProb >= 50.0 && breakProb <= 30.0) {
-    return 'safe_to_sow';
-  }
-
-  // 4. Moderate/elevated break risk requiring protective irrigation reserves
-  if (breakProb >= 40.0) {
-    return 'prepare_irrigation';
-  }
-
-  // 5. Normal climatological baseline
-  return 'monitor_conditions';
+  return null;
 }
 
 /**
@@ -133,9 +274,10 @@ export function evaluateAdvisoryRule(
   const isModelProductionReady = opts.isModelProductionReady ?? false;
   const langCode = opts.langCode || opts.targetLanguage || 'en';
 
+  const unverifiedMsg = 'No verified advisory rule is available for this forecast.';
+
   // 1. Handle missing forecast data
   if (!prediction) {
-    const unverifiedMsg = 'No verified advisory rule is available for this forecast.';
     return {
       hasMatch: false,
       hasMatchingRule: false,
@@ -177,51 +319,55 @@ export function evaluateAdvisoryRule(
     ? 'Forecast generated by an experimental research model. This advisory does not constitute validated operational advisory guidance.'
     : null;
 
-  // 3. Determine candidate action
-  const candidateAction = determineCandidateAction(prediction);
+  // 3. Filter active rules only (ignore inactive rules)
+  const activeRules = rules.filter((r) => Boolean(r.is_active));
 
-  // 4. Filter active rules only (ignore inactive rules)
-  const activeRules = rules.filter((r) => r.is_active);
+  // 4. Evaluate trigger_condition for each active rule
+  interface CandidateMatch {
+    rule: AdvisoryRuleRow;
+    isCropSpecific: boolean;
+  }
 
-  // 5. Match candidate action:
-  // First priority: crop-specific rule
-  let matchedRule: AdvisoryRuleRow | undefined;
-  let isCropSpecific = false;
+  const matchingCandidates: CandidateMatch[] = [];
 
-  if (targetCrop !== 'general') {
-    const cropMatches = activeRules.filter(
-      (r) => r.action_type === candidateAction && r.crop_category.toLowerCase() === targetCrop
-    );
-    if (cropMatches.length > 0) {
-      cropMatches.sort((a, b) => a.rule_code.localeCompare(b.rule_code));
-      matchedRule = cropMatches[0];
-      isCropSpecific = true;
+  for (const rule of activeRules) {
+    const isConditionMet = evaluateTriggerCondition(prediction, rule.trigger_condition);
+    if (!isConditionMet) {
+      continue;
+    }
+
+    const ruleCrop = (rule.crop_category || 'general').toLowerCase().trim();
+    const isTargetCropMatch = targetCrop !== 'general' && ruleCrop === targetCrop;
+    const isGeneralMatch = ruleCrop === 'general' || ruleCrop === 'kharif_general';
+
+    if (isTargetCropMatch) {
+      matchingCandidates.push({ rule, isCropSpecific: true });
+    } else if (isGeneralMatch) {
+      matchingCandidates.push({ rule, isCropSpecific: false });
     }
   }
 
-  // Second priority: general fallback rule
-  if (!matchedRule) {
-    const generalMatches = activeRules.filter(
-      (r) =>
-        r.action_type === candidateAction &&
-        (r.crop_category.toLowerCase() === 'general' || r.crop_category.toLowerCase() === 'kharif_general')
-    );
-    if (generalMatches.length > 0) {
-      generalMatches.sort((a, b) => a.rule_code.localeCompare(b.rule_code));
-      matchedRule = generalMatches[0];
-      isCropSpecific = false;
+  // Priority sorting:
+  // 1. Crop-specific matching rules before general rules
+  // 2. Deterministic tie-break using rule_code
+  matchingCandidates.sort((a, b) => {
+    if (a.isCropSpecific !== b.isCropSpecific) {
+      return a.isCropSpecific ? -1 : 1;
     }
-  }
+    return a.rule.rule_code.localeCompare(b.rule.rule_code);
+  });
 
-  // 6. Handle no verified rule match
+  const matchedRule: AdvisoryRuleRow | undefined = matchingCandidates[0]?.rule;
+  const isCropSpecific = matchingCandidates[0]?.isCropSpecific ?? false;
+
+  // 5. Handle no verified rule match
   if (!matchedRule) {
-    const unverifiedMsg = 'No verified advisory rule is available for this forecast.';
     return {
       hasMatch: false,
       hasMatchingRule: false,
       ruleCode: 'NO_VERIFIED_RULE',
-      actionType: candidateAction,
-      action: candidateAction,
+      actionType: null,
+      action: null,
       cropCategory: targetCrop,
       cropType: targetCrop,
       icarReferenceCode: null,
@@ -250,7 +396,8 @@ export function evaluateAdvisoryRule(
     };
   }
 
-  // 7. Resolve multilingual template
+  // 6. Match confirmed: resolve localized template
+  const candidateAction = determineCandidateAction(prediction, matchedRule);
   const localized = resolveLocalizedTemplate(matchedRule, langCode);
   const isGeneralFallback = !isCropSpecific && targetCrop !== 'general';
 
@@ -258,8 +405,8 @@ export function evaluateAdvisoryRule(
     hasMatch: true,
     hasMatchingRule: true,
     ruleCode: matchedRule.rule_code,
-    actionType: matchedRule.action_type,
-    action: matchedRule.action_type,
+    actionType: candidateAction,
+    action: candidateAction,
     cropCategory: targetCrop,
     cropType: matchedRule.crop_category.toLowerCase() as CropType,
     icarReferenceCode: matchedRule.icar_reference_code,

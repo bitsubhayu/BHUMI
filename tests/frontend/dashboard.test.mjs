@@ -17,6 +17,10 @@ import { parseModelMetadata, FALLBACK_MODEL_METADATA } from '../../src/lib/metad
 import {
   evaluateAdvisoryRule,
   normalizeCropType,
+  evaluateTriggerCondition,
+  parseConditionClause,
+  evaluateClause,
+  determineCandidateAction,
 } from '../../src/lib/advisory/engine.ts';
 import {
   resolveLocalizedTemplate,
@@ -527,6 +531,29 @@ const dummyPredictionNoTrigger = {
 
 describe('9. Rule Matching & Deterministic Selection', () => {
 
+  it('parses and evaluates comparison and IN clauses safely via condition DSL', () => {
+    const compParsed = parseConditionClause('break_probability >= 50');
+    assert.deepEqual(compParsed, {
+      type: 'comparison',
+      field: 'break_probability',
+      operator: '>=',
+      targetValue: 50,
+    });
+    assert.equal(evaluateClause(compParsed, { break_probability: 50 }), true);
+    assert.equal(evaluateClause(compParsed, { break_probability: 49.9 }), false);
+
+    const inParsed = parseConditionClause('lead_time_bucket IN (week_1, week_2)');
+    assert.deepEqual(inParsed, {
+      type: 'in',
+      field: 'lead_time_bucket',
+      allowedValues: ['week_1', 'week_2'],
+    });
+    assert.equal(evaluateClause(inParsed, { lead_time_bucket: 'week_1' }), true);
+    assert.equal(evaluateClause(inParsed, { lead_time_bucket: 'week_3' }), false);
+
+    assert.equal(parseConditionClause('malicious_func()'), null);
+  });
+
   it('matches active general rule when trigger threshold is met', () => {
     const result = evaluateAdvisoryRule(dummyPredictionBreak, {
       rules: VERIFIED_ADVISORY_RULES,
@@ -543,11 +570,135 @@ describe('9. Rule Matching & Deterministic Selection', () => {
     assert.ok(result.template.suggested_measures.length > 0);
   });
 
+  it('matches at boundary 50.0 and rejects at 49.9 for break_probability >= 50', () => {
+    const rule = {
+      rule_code: 'THRESHOLD-BOUNDARY-TEST',
+      crop_category: 'general',
+      action_type: 'delay_sowing',
+      trigger_condition: 'break_probability >= 50',
+      english_title: 'Delay Test',
+      english_recommendation: 'Delay Rec',
+      suggested_measures: [],
+      is_active: true,
+      icar_reference_code: 'ICAR-BOUNDARY-TEST',
+      created_at: '2026-09-28T00:00:00Z',
+      updated_at: '2026-09-28T00:00:00Z',
+    };
+
+    const predAt50 = { ...dummyPredictionBreak, break_probability: 50.0 };
+    const resultAt50 = evaluateAdvisoryRule(predAt50, { rules: [rule], selectedCrop: 'general' });
+    assert.equal(resultAt50.hasMatchingRule, true);
+    assert.equal(resultAt50.ruleCode, 'THRESHOLD-BOUNDARY-TEST');
+    assert.equal(resultAt50.action, 'delay_sowing');
+
+    const predAt49_9 = { ...dummyPredictionBreak, break_probability: 49.9 };
+    const resultAt49_9 = evaluateAdvisoryRule(predAt49_9, { rules: [rule], selectedCrop: 'general' });
+    assert.equal(resultAt49_9.hasMatchingRule, false);
+    assert.equal(resultAt49_9.ruleCode, 'NO_VERIFIED_RULE');
+    assert.equal(resultAt49_9.action, null);
+    assert.equal(resultAt49_9.template.title, 'No verified advisory rule is available for this forecast.');
+  });
+
+  it('evaluates AND conditions strictly requiring all clauses to be satisfied', () => {
+    const andRule = {
+      rule_code: 'AND-CONDITION-TEST',
+      crop_category: 'general',
+      action_type: 'safe_to_sow',
+      trigger_condition: 'onset_probability >= 50 AND break_probability <= 30',
+      english_title: 'Safe Sowing Window',
+      english_recommendation: 'Rec',
+      suggested_measures: [],
+      is_active: true,
+      icar_reference_code: 'ICAR-AND-TEST',
+      created_at: '2026-09-28T00:00:00Z',
+      updated_at: '2026-09-28T00:00:00Z',
+    };
+
+    // Both true (onset=55 >= 50, break=25 <= 30) -> true
+    const bothTrue = { ...dummyPredictionOnset, onset_probability: 55.0, break_probability: 25.0 };
+    assert.equal(evaluateTriggerCondition(bothTrue, andRule.trigger_condition), true);
+    assert.equal(evaluateAdvisoryRule(bothTrue, { rules: [andRule] }).hasMatchingRule, true);
+
+    // First true, second false (onset=55 >= 50, break=35 > 30) -> false
+    const secondFalse = { ...dummyPredictionOnset, onset_probability: 55.0, break_probability: 35.0 };
+    assert.equal(evaluateTriggerCondition(secondFalse, andRule.trigger_condition), false);
+    assert.equal(evaluateAdvisoryRule(secondFalse, { rules: [andRule] }).hasMatchingRule, false);
+
+    // First false (onset=45 < 50), second true -> false
+    const firstFalse = { ...dummyPredictionOnset, onset_probability: 45.0, break_probability: 25.0 };
+    assert.equal(evaluateTriggerCondition(firstFalse, andRule.trigger_condition), false);
+    assert.equal(evaluateAdvisoryRule(firstFalse, { rules: [andRule] }).hasMatchingRule, false);
+  });
+
+  it('evaluates lead_time_bucket IN (...) sets accurately', () => {
+    const inRule = {
+      rule_code: 'IN-SET-TEST',
+      crop_category: 'general',
+      action_type: 'delay_sowing',
+      trigger_condition: 'lead_time_bucket IN (week_1, week_2)',
+      english_title: 'Delay Test',
+      english_recommendation: 'Rec',
+      suggested_measures: [],
+      is_active: true,
+      icar_reference_code: 'ICAR-IN-TEST',
+      created_at: '2026-09-28T00:00:00Z',
+      updated_at: '2026-09-28T00:00:00Z',
+    };
+
+    const predWeek1 = { ...dummyPredictionBreak, lead_time_bucket: 'week_1' };
+    assert.equal(evaluateTriggerCondition(predWeek1, inRule.trigger_condition), true);
+
+    const predWeek2 = { ...dummyPredictionBreak, lead_time_bucket: 'week_2' };
+    assert.equal(evaluateTriggerCondition(predWeek2, inRule.trigger_condition), true);
+
+    const predWeek3 = { ...dummyPredictionBreak, lead_time_bucket: 'week_3' };
+    assert.equal(evaluateTriggerCondition(predWeek3, inRule.trigger_condition), false);
+
+    const predWeek4 = { ...dummyPredictionBreak, lead_time_bucket: 'week_4' };
+    assert.equal(evaluateTriggerCondition(predWeek4, inRule.trigger_condition), false);
+  });
+
+  it('dynamically adapts matching behavior when rule trigger_condition changes in data', () => {
+    const dynamicRule = {
+      rule_code: 'DYNAMIC-DATA-RULE',
+      crop_category: 'general',
+      action_type: 'prepare_irrigation',
+      trigger_condition: 'break_probability >= 40',
+      english_title: 'Irrigation Alert',
+      english_recommendation: 'Rec',
+      suggested_measures: [],
+      is_active: true,
+      icar_reference_code: 'ICAR-DYN-01',
+      created_at: '2026-09-28T00:00:00Z',
+      updated_at: '2026-09-28T00:00:00Z',
+    };
+
+    const predAt45 = { ...dummyPredictionBreak, break_probability: 45.0, lead_time_bucket: 'week_3' };
+
+    // Matches threshold 40
+    const res1 = evaluateAdvisoryRule(predAt45, { rules: [dynamicRule] });
+    assert.equal(res1.hasMatchingRule, true);
+    assert.equal(res1.ruleCode, 'DYNAMIC-DATA-RULE');
+
+    // Without changing engine code, change data threshold in rule to 60
+    const updatedDataRule = { ...dynamicRule, trigger_condition: 'break_probability >= 60' };
+    const res2 = evaluateAdvisoryRule(predAt45, { rules: [updatedDataRule] });
+    assert.equal(res2.hasMatchingRule, false);
+    assert.equal(res2.ruleCode, 'NO_VERIFIED_RULE');
+
+    // Now test with break_probability 65 against updated rule
+    const predAt65 = { ...predAt45, break_probability: 65.0 };
+    const res3 = evaluateAdvisoryRule(predAt65, { rules: [updatedDataRule] });
+    assert.equal(res3.hasMatchingRule, true);
+    assert.equal(res3.ruleCode, 'DYNAMIC-DATA-RULE');
+  });
+
   it('strictly ignores inactive rules even when conditions match', () => {
     const inactiveRule = {
       rule_code: 'INACTIVE-RULE-TEST',
       crop_category: 'general',
       action_type: 'delay_sowing',
+      trigger_condition: 'break_probability >= 50 AND lead_time_bucket IN (week_1, week_2)',
       english_title: 'Inactive template that must never trigger',
       english_recommendation: 'Inactive recommendation',
       suggested_measures: [],
@@ -597,16 +748,15 @@ describe('9. Rule Matching & Deterministic Selection', () => {
   });
 
   it('returns explicit unverified advisory message when no rule matches without fabricating advice', () => {
-    // Pass rules missing the monitor_conditions action
-    const rulesWithoutMonitor = VERIFIED_ADVISORY_RULES.filter((r) => r.action_type !== 'monitor_conditions');
     const result = evaluateAdvisoryRule(dummyPredictionNoTrigger, {
-      rules: rulesWithoutMonitor,
+      rules: VERIFIED_ADVISORY_RULES,
       selectedCrop: 'general',
       targetLanguage: 'en',
     });
 
     assert.equal(result.hasMatchingRule, false);
     assert.equal(result.ruleCode, 'NO_VERIFIED_RULE');
+    assert.equal(result.action, null);
     assert.equal(result.icarReferenceCode, null);
     assert.equal(result.template.title, 'No verified advisory rule is available for this forecast.');
     assert.match(result.template.recommendation, /No verified advisory rule is available for this forecast/i);
@@ -621,6 +771,43 @@ describe('9. Rule Matching & Deterministic Selection', () => {
 
     assert.equal(result.hasMatchingRule, false);
     assert.equal(result.template.title, 'No verified advisory rule is available for this forecast.');
+  });
+
+  it('determineCandidateAction contains zero hardcoded thresholds and returns null without matched rule', () => {
+    const matchedRule = VERIFIED_ADVISORY_RULES.find((r) => r.rule_code === 'ICAR-CRIDA-DELAY-01');
+    assert.equal(determineCandidateAction(dummyPredictionBreak, matchedRule), 'delay_sowing');
+    assert.equal(determineCandidateAction(dummyPredictionNoTrigger, null), null);
+  });
+
+  it('does not select a rule merely because action_type or advisory_code matches when trigger_condition is not met', () => {
+    const predWithActionCode = {
+      ...dummyPredictionNoTrigger,
+      advisory_code: 'delay_sowing',
+      break_probability: 10.0,
+      lead_time_bucket: 'week_1',
+    };
+
+    const result = evaluateAdvisoryRule(predWithActionCode, {
+      rules: VERIFIED_ADVISORY_RULES,
+      selectedCrop: 'general',
+      targetLanguage: 'en',
+    });
+
+    assert.equal(result.hasMatchingRule, false);
+    assert.equal(result.ruleCode, 'NO_VERIFIED_RULE');
+    assert.equal(result.template.title, 'No verified advisory rule is available for this forecast.');
+  });
+
+  it('strictly avoids eval(), Function(), or unsafe arbitrary expression execution in engine source', async () => {
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const enginePath = path.resolve('src/lib/advisory/engine.ts');
+    const content = fs.readFileSync(enginePath, 'utf-8');
+    const codeWithoutComments = content.replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, '');
+
+    assert.doesNotMatch(codeWithoutComments, /\beval\s*\(/);
+    assert.doesNotMatch(codeWithoutComments, /new\s+Function\s*\(/);
+    assert.doesNotMatch(codeWithoutComments, /\bFunction\s*\(/);
   });
 });
 
@@ -694,6 +881,7 @@ describe('10. Multilingual Static Templates & Fallback Integrity', () => {
       rule_code: 'PARTIAL-LANG-TEST',
       crop_category: 'general',
       action_type: 'safe_to_sow',
+      trigger_condition: 'onset_probability >= 50',
       english_title: 'English Title',
       english_recommendation: 'English Rec',
       suggested_measures: [],
