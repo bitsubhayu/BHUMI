@@ -49,32 +49,36 @@ class SmapAdapter(BaseSourceAdapter):
         if not self.is_configured:
             return None
 
-        try:
-            resp = requests.get(
-                self.EARTHDATA_TOKEN_URL,
-                auth=(self.config.earthdata_username, self.config.earthdata_password),
-                timeout=15,
-            )
-            if resp.status_code == 200:
-                tokens = resp.json()
-                if isinstance(tokens, list) and len(tokens) > 0:
-                    self._bearer_token = tokens[0].get("access_token")
+        for attempt in range(3):
+            try:
+                resp = requests.get(
+                    self.EARTHDATA_TOKEN_URL,
+                    auth=(self.config.earthdata_username, self.config.earthdata_password),
+                    timeout=15,
+                )
+                if resp.status_code == 200:
+                    tokens = resp.json()
+                    if isinstance(tokens, list) and len(tokens) > 0:
+                        self._bearer_token = tokens[0].get("access_token")
+                        return self._bearer_token
+                # Fallback to POST /token
+                post_resp = requests.post(
+                    "https://urs.earthdata.nasa.gov/api/users/token",
+                    auth=(self.config.earthdata_username, self.config.earthdata_password),
+                    timeout=15,
+                )
+                if post_resp.status_code in (200, 201):
+                    self._bearer_token = post_resp.json().get("access_token")
                     return self._bearer_token
-            # Fallback to POST /token
-            post_resp = requests.post(
-                "https://urs.earthdata.nasa.gov/api/users/token",
-                auth=(self.config.earthdata_username, self.config.earthdata_password),
-                timeout=15,
-            )
-            if post_resp.status_code in (200, 201):
-                self._bearer_token = post_resp.json().get("access_token")
-                return self._bearer_token
 
-            self.logger.warning(f"Could not acquire NASA Earthdata token (HTTP {resp.status_code})")
-            return None
-        except Exception as e:
-            self.logger.error(f"Error obtaining NASA Earthdata token: {e}")
-            return None
+                self.logger.warning(f"Could not acquire NASA Earthdata token (HTTP {resp.status_code})")
+                return None
+            except Exception as e:
+                if attempt < 2:
+                    time.sleep(2)
+                    continue
+                self.logger.error(f"Error obtaining NASA Earthdata token: {e}")
+                return None
 
     def query_daily_granule(self, target_date: datetime.date) -> Optional[tuple[str, str]]:
         """Search NASA CMR for available SMAP SPL3SMP granules on target_date.
