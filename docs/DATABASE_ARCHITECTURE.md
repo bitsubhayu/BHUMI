@@ -88,7 +88,7 @@ The database architecture is designed specifically to solve the tension between 
   - `action_type`: `'safe_to_sow' | 'delay_sowing' | 'prepare_irrigation' | 'drainage_alert' | 'monitor_conditions'`
   - `trigger_condition`: Logical condition definition
   - `english_title`, `english_recommendation`, `suggested_measures`
-  - `localized_templates`: JSONB object holding pre-translated regional language templates (Bhashini API cache)
+  - `localized_templates`: JSONB object holding pre-translated regional language static templates across all 10 Step 6 locales
   - `icar_reference_code`: ICAR/KVK reference tag
 
 ---

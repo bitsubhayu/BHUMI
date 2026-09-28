@@ -176,9 +176,13 @@ BHUMI/                         ← repository root, also Vercel root
 
 ## 7. Advisory language & multilingual strategy
 
-- **Translation approach (Step 6, accepted):** Static prewritten templates in `src/lib/i18n/messages/{en,hi,bn}.json`. Advisory text arrives already translated from the backend. No runtime translation service is required. Strings marked `// MOCK COPY: needs native-speaker review`.
-- **Bhashini:** credentials unavailable during Steps 1–6. Integration point is prepared; activate when credentials are available (Step 7+).
-- **IndicTrans2** (AI4Bharat): designated self-hosted fallback if/when Bhashini is unblocked.
+- **Translation approach (Authoritative Implementation):** Static pretranslated multilingual advisory templates are the primary runtime implementation.
+- **Languages Supported (All 10 Step 6 Locales):** The advisory engine evaluates rules across all 10 verified regional languages:
+  `en` (English), `hi` (Hindi), `mr` (Marathi), `te` (Telugu), `ta` (Tamil), `bn` (Bengali), `gu` (Gujarati), `kn` (Kannada), `pa` (Punjabi), and `or` (Odia).
+- **Deterministic English Fallback:** If localized content for a specific regional dialect is unseeded or missing, the engine deterministically falls back to verified English advice with an explicit fallback indicator (`isEnglishFallback: true`).
+- **No Runtime Translation API:** No external translation API is invoked in the request path or pipeline, guaranteeing zero latency, zero third-party API downtime, and zero cost. No translation credentials or API keys are required.
+- **IndicTrans2 Architecture (Designated Fallback Option):** IndicTrans2 (by AI4Bharat) is designated as the open-source offline/self-hosted fallback option for future dynamic translation if needed. It is not currently deployed at runtime.
+- **Bhashini Status:** Bhashini is not part of the BHUMI implementation or planned runtime dependency. All external translation accounts or keys have been removed.
 - **Primary channel — web PWA**: fully free on Vercel, works on any smartphone browser, installable, no per-message cost ever.
 - **WhatsApp pull-bot**: Phase 2 only. Not implemented. Verify current Meta pricing terms before building.
 - **SMS / proactive push**: Phase 2+, budget-dependent.
@@ -195,7 +199,7 @@ BHUMI/                         ← repository root, also Vercel root
 | ERA5 / ERA5-Land | Copernicus Climate Data Store | Free `cdsapi` account |
 | GPM IMERG / SMAP | NASA Earthdata | Free login |
 | INSAT-3D/3DR (optional) | ISRO MOSDAC | Free registration |
-| Translation | Static templates now; Bhashini when credentials available | Free |
+| Translation | Static multilingual templates (IndicTrans2 designated open-source fallback) | Free / Zero API overhead |
 
 ---
 
@@ -208,8 +212,7 @@ BHUMI/                         ← repository root, also Vercel root
 5. **NASA Earthdata Login** (urs.earthdata.nasa.gov) — free account, for GPM IMERG and SMAP.
 6. **ISRO MOSDAC** (mosdac.gov.in) — free registration, only if using INSAT-3D/3DR.
 7. **IMD Pune data access** — registration for gridded rainfall/temperature (non-commercial/academic); start this early since it may not be instant.
-8. **No account needed**: NOAA ONI, BOM DMI/RMM indices, CHIRPS, NOAA GFS/GEFS (NOMADS), ECMWF Open Data — all public URLs.
-9. **Bhashini** (bhashini.gov.in) — register when credentials needed for translation (Phase 2+).
+8. **No account needed**: NOAA ONI, BOM DMI/RMM indices, CHIRPS, NOAA GFS/GEFS (NOMADS), ECMWF Open Data — all public URLs. Static multilingual templates require no external accounts.
 
 ---
 
@@ -218,7 +221,7 @@ BHUMI/                         ← repository root, also Vercel root
 - Whether your Supabase project's reported "database size" includes PostGIS geometry/index overhead the way §3 estimates — check the dashboard once real data is loaded, since the numbers are a design target, not a guarantee.
 - Current IMD Pune data-access process for the specific datasets needed — registration workflows for government portals change.
 - OpenFreeMap tile availability and attribution requirements — check `tiles.openfreemap.org/styles/positron` responds; if not, fall back to their `liberty` style and mute POI/label layers.
-- Bhashini API availability when starting translation work.
+- Verified ICAR-CRIDA contingency rules coverage across all 10 supported regional languages.
 
 ---
 

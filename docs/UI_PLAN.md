@@ -202,3 +202,5 @@ This enables bookmarkable views, shareable links for extension officers, and bac
    Rather than attempting to stream all 6,700 block boundary polygons in the initial view, the national view serves centroid summary points, loading high-resolution PostGIS boundaries only when a specific district or block is selected.
 4. **Authoritative Model Metadata Isolation:**  
    To prevent bundling `node:fs` or invoking `new Function` dynamic execution in browser adapters, metadata is resolved via the existing server route `GET /api/readiness`, which reads `pipeline/ml/artifacts/metadata.json` server-side.
+5. **Multilingual Strategy & Zero External Translation APIs:**  
+   Static pretranslated templates serve as the authoritative runtime implementation across all 10 locales. Missing localized strings fall back to verified English with an explicit fallback indicator (`isEnglishFallback: true`). IndicTrans2 (AI4Bharat) is designated as the open-source fallback architecture for future dynamic translation if needed. Bhashini is intentionally excluded; no runtime translation API or external credentials are used.

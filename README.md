@@ -60,7 +60,7 @@ BHUMI is designed under strict operational constraints: **Vercel Free Tier**, **
 │ Next.js 16 (App Router/Vercel) │
 │ - MapLibre GL JS + OSM / CARTO │
 │ - shadcn/ui + Tailwind CSS     │
-│ - Bhashini Multilingual UI     │
+│ - Multilingual Advisory UI     │
 └────────────────────────────────┘
 ```
 
@@ -97,7 +97,7 @@ Step 1 establishes the **complete, production-ready frontend foundation and arch
   - `MapContainerPlaceholder`: Interactive MapLibre GL JS visualizer shell with lead-time tabs (Week 1–4), risk layer toggles, and block search.
   - `RiskLegend`: Accessible 5-tier calibrated probability scale.
   - `ExplainabilityPreview`: Dominant physical teleconnection drivers breakdown.
-  - `AdvisoryShell`: ICAR/KVK threshold rule cards with Bhashini multilingual framework.
+  - `AdvisoryShell`: ICAR/KVK threshold rule cards with multilingual static template framework.
   - `ArchitectureOverview`: In-depth breakdown of the ₹0 serverless architecture.
   - `Footer`: Official MoES / NCMRWF context and governance attributions.
 
@@ -136,8 +136,7 @@ The following modules are **explicitly reserved for subsequent phases** per `PRD
   - On-demand Panchayat BCSD terrain downscaling endpoint
   - Supabase live prediction queries
 - **Phase 4 / Step 5 (Advisory Engine & Multilingual Delivery)**:
-  - Dynamic ICAR/KVK rule execution
-  - Bhashini API integration for real-time translation of advisory templates
+  - Static multilingual advisory template engine (IndicTrans2 designated open-source fallback)
 - **Phase 5 / Step 6 (Automation & Pipeline Scheduling)**:
   - GitHub Actions cron workflows (`06:00 IST` daily live inference and weekly archive sync)
   - Future scope: WhatsApp pull-bot gateway (customer-initiated messaging)
@@ -160,9 +159,6 @@ cp .env.example .env.local
 | `NEXT_PUBLIC_SUPABASE_URL` | Client & Server | Supabase project URL for PostgREST & PostGIS queries |
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Client & Server | Supabase public anonymous API key |
 | `SUPABASE_SERVICE_ROLE_KEY` | Server Only | Secret service-role key for backend operations |
-| `BHASHINI_API_KEY` | Server Only | Bhashini developer API key for regional translations |
-| `BHASHINI_USER_ID` | Server Only | Bhashini user identifier |
-| `BHASHINI_PIPELINE_ID` | Server Only | Bhashini translation pipeline ID |
 | `CDSAPI_URL` & `CDSAPI_KEY` | Actions Only | Copernicus Climate Data Store credentials (ERA5) |
 | `EARTHDATA_USERNAME` & `_PASSWORD` | Actions Only | NASA Earthdata credentials (GPM IMERG, SMAP) |
 

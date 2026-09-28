@@ -130,7 +130,7 @@ export interface Advisory {
   textByLocale: Record<Locale, string>;
 }
 ```
-- `textByLocale`: Evaluated advice strings across all 10 languages. If a translation is missing in the database, it deterministically defaults to verified English text.
+- `textByLocale`: Evaluated advice strings across all 10 languages (`en`, `hi`, `mr`, `te`, `ta`, `bn`, `gu`, `kn`, `pa`, `or`). Static pretranslated templates are the authoritative runtime approach. If localized content for a regional language is missing, it deterministically defaults to verified English text with an explicit fallback indicator (`isEnglishFallback: true`). IndicTrans2 (AI4Bharat) is designated as the open-source fallback architecture if future dynamic translation is required. Zero runtime translation APIs (no Bhashini dependency) and zero translation credentials are used.
 
 ### 2.5 ForecastMeta
 Authoritative model operational status and metadata:

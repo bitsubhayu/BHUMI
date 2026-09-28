@@ -135,7 +135,8 @@ node --experimental-strip-types scripts/verify_adapter.mjs
 ---
 
 ## Intentionally Excluded Requirements
-- **WhatsApp & Bhashini Integration:** Banned per project constraints; reserved for Step 8.
+- **Bhashini Integration:** Intentionally excluded from the BHUMI implementation and planned dependencies. No runtime translation API is used; static multilingual templates serve as the primary runtime delivery mechanism across all 10 Step 6 locales, with IndicTrans2 (AI4Bharat) designated as the open-source fallback architecture if future dynamic translation is required.
+- **WhatsApp Integration:** Reserved as future Phase 2 scope; not implemented in Steps 1–7.
 - **Client-Side Heavy Animation Libraries (GSAP / Lottie):** Banned to preserve low-end mobile performance and battery efficiency.
 - **External Charting Packages (Chart.js / Recharts):** Excluded in favor of lightweight, hand-rolled SVG gauge and CSS grid visualizations.
 - **Global State Management Libraries (Redux / Zustand):** Excluded in favor of shareable URL query parameters (`?block=&hazard=&week=&lang=`).
