@@ -1,7 +1,10 @@
 """Stage 1: Teleconnection Ensemble Combiner.
 
 Combines the Analog Ensemble and the Small GRU sequence model into a
-transparent, configurable ensemble as specified in TECH_STACK.md §5.
+transparent, configurable ensemble as specified in TECH_STACK.md §5:
+- Strict gate: untrained or random GRU is NEVER used in production
+- When GRU training data is insufficient, GRU is explicitly disabled (weight = 0.0)
+- Stage 1 falls back gracefully to Analog Ensemble only
 """
 
 from __future__ import annotations
@@ -20,18 +23,68 @@ class TeleconnectionEnsemble:
 
     def __init__(
         self,
-        analog_weight: float = 0.70,
         analog_model: Optional[AnalogEnsembleModel] = None,
         gru_model: Optional[SmallGRUModel] = None,
     ) -> None:
-        self.analog_weight = analog_weight
-        self.gru_weight = 1.0 - analog_weight
         self.analog_model = analog_model or AnalogEnsembleModel()
         self.gru_model = gru_model or SmallGRUModel()
 
-    def fit(self, telecon_history: Sequence[dict[str, Any]]) -> "TeleconnectionEnsemble":
-        """Fit analog and GRU models on historical teleconnection records."""
+        # Strict safety gating: GRU is disabled by default until genuinely trained!
+        if self.gru_model.is_trained:
+            self.gru_enabled: bool = True
+            self.gru_status: str = "TRAINED"
+            self.analog_weight: float = 0.70
+            self.gru_weight: float = 0.30
+        else:
+            self.gru_enabled: bool = False
+            self.gru_status: str = "DISABLED_UNTRAINED"
+            self.analog_weight: float = 1.0
+            self.gru_weight: float = 0.0
+
+    def fit(
+        self,
+        telecon_history: Sequence[dict[str, Any]],
+        X_seqs: Optional[np.ndarray] = None,
+        y_targets: Optional[np.ndarray] = None,
+    ) -> "TeleconnectionEnsemble":
+        """Fit analog and GRU models on historical teleconnection records and target outcomes.
+        
+        Args:
+            telecon_history: Daily teleconnection index history
+            X_seqs: Optional extracted teleconnection sequences (N, 30, 5)
+            y_targets: Optional target lead distributions (N, 4, 4)
+        """
+        # 1. Fit Analog Ensemble
         self.analog_model.fit(telecon_history)
+
+        # 2. Train GRU only if sufficient genuine training data is provided
+        # Scientific requirement: minimum 100 sequences required to train GRU
+        if X_seqs is not None and y_targets is not None and len(X_seqs) >= 100:
+            try:
+                res = self.gru_model.train_supervised(X_seqs, y_targets, epochs=25, lr=0.01)
+                if self.gru_model.is_trained and self.gru_model.weight_delta_norm > 1e-4:
+                    self.gru_enabled = True
+                    self.gru_status = "TRAINED"
+                    self.analog_weight = 0.70
+                    self.gru_weight = 0.30
+                else:
+                    self.gru_enabled = False
+                    self.gru_status = "DISABLED_VALIDATION_FAILURE"
+                    self.analog_weight = 1.0
+                    self.gru_weight = 0.0
+            except Exception:
+                self.gru_enabled = False
+                self.gru_status = "DISABLED_TRAINING_ERROR"
+                self.analog_weight = 1.0
+                self.gru_weight = 0.0
+        else:
+            # Data insufficient: DO NOT use random GRU in production!
+            self.gru_enabled = False
+            seq_count = len(X_seqs) if X_seqs is not None else 0
+            self.gru_status = f"DISABLED_INSUFFICIENT_TRAINING_DATA (samples={seq_count}, required=100)"
+            self.analog_weight = 1.0
+            self.gru_weight = 0.0
+
         return self
 
     def predict(
@@ -39,26 +92,11 @@ class TeleconnectionEnsemble:
         recent_trajectory: Sequence[dict[str, Any]],
         exclude_year: Optional[int] = None,
     ) -> dict[str, Any]:
-        """Generate combined teleconnection probabilities and identify analog year.
-        
-        Args:
-            recent_trajectory: Sequence of recent daily teleconnection dicts (min 1, ideally 14-30).
-            exclude_year: Year to exclude during cross-validation.
-            
-        Returns:
-            Dict containing:
-              - 'lead_probabilities': dict mapping week_1..week_4 to state probs
-              - 'analog_year': int, closest historical match year
-              - 'primary_driver': str, physical teleconnection explanation
-              - 'secondary_driver': str, secondary factor
-              - 'analog_matches': list of top matches
-        """
+        """Generate combined teleconnection probabilities and identify analog year."""
         if not recent_trajectory:
-            latest = {"enso_oni": 0.0, "iod_dmi": 0.0, "mjo_phase": 1, "mjo_amplitude": 1.0}
-            trajectory = [latest]
-        else:
-            trajectory = list(recent_trajectory)
+            raise ValueError("recent_trajectory cannot be empty for teleconnection prediction")
 
+        trajectory = list(recent_trajectory)
         latest = trajectory[-1]
         prev_14 = trajectory[-14] if len(trajectory) >= 14 else trajectory[0]
 
@@ -78,31 +116,36 @@ class TeleconnectionEnsemble:
         analog_year = self.analog_model.get_dominant_analog_year(current_state)
         analogs = self.analog_model.find_analogs(current_state, exclude_year=exclude_year)
 
-        # 2. GRU sequence preparation: (seq_len, 5) -> [ONI, DMI, RMM1, RMM2, AMP]
-        seq_vectors: list[list[float]] = []
-        for t in trajectory[-30:]:
-            amp = float(t.get("mjo_amplitude") or 1.0)
-            phase = int(t.get("mjo_phase") or 1)
-            ang = 2.0 * math.pi * (phase - 1) / 8.0
-            seq_vectors.append([
-                float(t.get("enso_oni") or 0.0),
-                float(t.get("iod_dmi") or 0.0),
-                amp * math.cos(ang),
-                amp * math.sin(ang),
-                amp,
-            ])
-        gru_input = np.array(seq_vectors, dtype=np.float64)
-        gru_probs = self.gru_model.predict_lead_probabilities(gru_input)
+        # 2. GRU sequence preparation only if GRU is trained and enabled
+        gru_probs: dict[str, dict[str, float]] = {}
+        if self.gru_enabled and self.gru_weight > 0.0:
+            seq_vectors: list[list[float]] = []
+            for t in trajectory[-30:]:
+                amp = float(t.get("mjo_amplitude") or 1.0)
+                phase = int(t.get("mjo_phase") or 1)
+                ang = 2.0 * math.pi * (phase - 1) / 8.0
+                seq_vectors.append([
+                    float(t.get("enso_oni") or 0.0),
+                    float(t.get("iod_dmi") or 0.0),
+                    amp * math.cos(ang),
+                    amp * math.sin(ang),
+                    amp,
+                ])
+            gru_input = np.array(seq_vectors, dtype=np.float64)
+            gru_probs = self.gru_model.predict_lead_probabilities(gru_input)
 
-        # 3. Transparent ensemble combination
+        # 3. Ensemble combination (if GRU disabled, strictly 100% Analog Ensemble)
         combined: dict[str, dict[str, float]] = {}
         for lead in ["week_1", "week_2", "week_3", "week_4"]:
             a_p = analog_probs.get(lead, {})
-            g_p = gru_probs.get(lead, {})
             lead_res: dict[str, float] = {}
             for state in ["onset", "active", "break", "heavy"]:
-                prob = self.analog_weight * a_p.get(state, 0.25) + self.gru_weight * g_p.get(state, 0.25)
-                lead_res[state] = round(prob, 4)
+                if self.gru_enabled and self.gru_weight > 0.0:
+                    g_p = gru_probs.get(lead, {})
+                    prob = self.analog_weight * a_p.get(state, 0.25) + self.gru_weight * g_p.get(state, 0.25)
+                else:
+                    prob = a_p.get(state, 0.25)
+                lead_res[state] = round(float(prob), 4)
             combined[lead] = lead_res
 
         # 4. Physical driver explainability attribution
@@ -114,10 +157,13 @@ class TeleconnectionEnsemble:
 
         return {
             "lead_probabilities": combined,
-            "analog_year": analog_year or 2024,
+            "analog_year": analog_year,
             "primary_driver": primary_driver,
             "secondary_driver": secondary_driver,
             "analogs": analogs,
+            "gru_status": self.gru_status,
+            "gru_enabled": self.gru_enabled,
+            "weights": {"analog": self.analog_weight, "gru": self.gru_weight},
         }
 
     def _determine_physical_drivers(

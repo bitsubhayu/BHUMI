@@ -19,6 +19,11 @@ on:
         type: boolean
         default: false
 
+      allow_experimental:
+        description: 'Allow running inference with experimental/unready model'
+        type: boolean
+        default: false
+
 concurrency:
   group: bhumi-daily-sync
   cancel-in-progress: false
@@ -56,6 +61,23 @@ jobs:
         run: |
           python -m unittest discover -s tests/unit
 
+      - name: Report Model Readiness Status
+        run: |
+          python -c "
+          from pipeline.ml.inference import ProductionInferenceEngine
+          from pipeline.utils.config import get_pipeline_config
+          engine = ProductionInferenceEngine(config=get_pipeline_config(), dry_run=True)
+          print('=' * 60)
+          print('BHUMI MODEL READINESS REPORT')
+          print('=' * 60)
+          print(f'Status:           {engine.readiness.get(\"status\")}')
+          print(f'Model Tier:       {engine.model_tier}')
+          print(f'Production Ready: {engine.is_production_ready}')
+          for r in engine.readiness.get('reasons', []):
+              print(f' - {r}')
+          print('=' * 60)
+          "
+
       - name: Execute Daily Live Synchronization
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -71,6 +93,9 @@ jobs:
           fi
           if [ "${{ inputs.sample_only }}" = "true" ]; then
             EXTRA_ARGS="$EXTRA_ARGS --sample-only"
+          fi
+          if [ "${{ inputs.allow_experimental }}" = "true" ]; then
+            EXTRA_ARGS="$EXTRA_ARGS --allow-experimental"
           fi
           DAYS="${{ inputs.days || '7' }}"
           

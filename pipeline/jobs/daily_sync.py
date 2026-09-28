@@ -121,6 +121,7 @@ def run_daily_sync(
     dry_run: bool = False,
     days: int = 7,
     sample_only: bool = False,
+    allow_experimental: bool = False,
 ) -> int:
     """Execute daily live synchronization job."""
     config = get_pipeline_config()
@@ -130,7 +131,10 @@ def run_daily_sync(
     logger.info("=" * 64)
     logger.info("BHUMI Daily Live Synchronization Job Starting")
     logger.info("=" * 64)
-    logger.info(f"Sync window: recent {days} days | Dry-run: {dry_run} | Sample only: {sample_only}")
+    logger.info(
+        f"Sync window: recent {days} days | Dry-run: {dry_run} | Sample only: {sample_only} | "
+        f"Allow experimental: {allow_experimental}"
+    )
     logger.info(f"Supabase endpoint: {config.supabase_url or '<not configured>'}")
 
     loader = SupabaseLoader(config=config, dry_run=dry_run)
@@ -260,12 +264,23 @@ def run_daily_sync(
         from pipeline.ml.inference import ProductionInferenceEngine
         engine = ProductionInferenceEngine(config=config, dry_run=dry_run)
         target_block_ids = [b["block_id"] for b in blocks]
-        inf_result = engine.run_inference(as_of_date=str(today), block_ids=target_block_ids)
-        logger.info(
-            f"[OK] Live inference successful: {inf_result['predictions_count']} predictions "
-            f"for {inf_result['blocks_processed']} blocks written to public.live_predictions "
-            f"(analog year: {inf_result.get('teleconnection_analog_year')})"
+        inf_result = engine.run_inference(
+            as_of_date=str(today),
+            block_ids=target_block_ids,
+            allow_experimental=allow_experimental,
         )
+        if not inf_result.get("success", False):
+            logger.warning(
+                f"[GATE] Live inference blocked by Model Readiness Gate: {inf_result.get('error')}. "
+                f"Model readiness: {inf_result.get('readiness_status')}. "
+                f"No unvalidated ML predictions written to public.live_predictions."
+            )
+        else:
+            logger.info(
+                f"[OK] Live inference successful: {inf_result['predictions_count']} predictions "
+                f"for {inf_result['blocks_processed']} blocks written to public.live_predictions "
+                f"(tier: {inf_result.get('model_tier')}, analog year: {inf_result.get('teleconnection_analog_year')})"
+            )
     except Exception as e:
         logger.error(f"[ERROR] Inference engine execution failed: {e}", exc_info=True)
         logger.warning("Existing live_predictions rows preserved without corruption.")
@@ -282,9 +297,15 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true", help="Simulate execution without modifying the database")
     parser.add_argument("--days", type=int, default=7, help="Number of recent days to synchronize (default: 7)")
     parser.add_argument("--sample-only", action="store_true", help="Run on a minimal representative sample dataset")
+    parser.add_argument("--allow-experimental", action="store_true", help="Allow running with experimental/unready model")
 
     args = parser.parse_args()
-    code = run_daily_sync(dry_run=args.dry_run, days=args.days, sample_only=args.sample_only)
+    code = run_daily_sync(
+        dry_run=args.dry_run,
+        days=args.days,
+        sample_only=args.sample_only,
+        allow_experimental=args.allow_experimental,
+    )
     sys.exit(code)
 
 

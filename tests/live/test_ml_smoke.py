@@ -48,18 +48,54 @@ class TestRealDataMLSmoke(unittest.TestCase):
         total_size_bytes = sum(f.stat().st_size for f in artifacts_dir.glob("*") if f.is_file())
         self.assertLess(total_size_bytes, 5 * 1024 * 1024, "Artifacts exceed 5 MB size limit")
 
-        # 2. Run real live inference
+        # 2. Verify that unready model is blocked by the Readiness Gate when allow_experimental=False
         engine = ProductionInferenceEngine(config=self.config, dry_run=False)
-        inf_result = engine.run_inference()
+        blocked_result = engine.run_inference(allow_experimental=False)
+        self.assertFalse(
+            blocked_result["success"],
+            "Unready model must not execute in production mode without explicit override"
+        )
+        self.assertEqual(blocked_result["status"], "BLOCKED_BY_READINESS_GATE")
+        self.assertEqual(blocked_result["predictions_count"], 0)
 
-        self.assertGreater(inf_result["blocks_processed"], 0)
-        self.assertGreater(inf_result["predictions_count"], 0)
+        # 3. Ensure test block has at least 7 days of observations in live_weather_buffer
+        import datetime
+        today = datetime.date.today()
+        test_block_id = "IND_MH_PUN_001"
+        buffer_records = [
+            {
+                "block_id": test_block_id,
+                "observation_date": str(today - datetime.timedelta(days=i)),
+                "rainfall_mm": 4.5,
+                "max_temp_c": 31.5,
+                "min_temp_c": 22.0,
+                "soil_moisture_idx": 48.0,
+                "data_source": "ERA5_SMAP_GPM_SYNTHESIZED",
+                "is_preliminary": False,
+            }
+            for i in range(8)
+        ]
+        engine.loader.load_live_weather_buffer(buffer_records)
+
+        # 4. Run real inference in explicit experimental mode
+        inf_result = engine.run_inference(
+            as_of_date=str(today),
+            block_ids=[test_block_id],
+            allow_experimental=True,
+        )
+
+        self.assertTrue(inf_result["success"])
+        self.assertEqual(inf_result["blocks_processed"], 1)
+        self.assertEqual(inf_result["predictions_count"], 4)
         self.assertEqual(inf_result["predictions_count"], inf_result["rows_loaded"])
 
-        # 3. Query back public.live_predictions from Supabase
+        # 5. Query back public.live_predictions from Supabase
         loader = engine.loader
-        preds = loader.fetch_live_predictions()
-        self.assertGreater(len(preds), 0, "No rows found in public.live_predictions")
+        all_preds = loader.fetch_live_predictions()
+        self.assertGreater(len(all_preds), 0, "No rows found in public.live_predictions")
+
+        preds = [p for p in all_preds if p["prediction_date"] == str(today) and p["block_id"] == test_block_id]
+        self.assertEqual(len(preds), 4, f"Expected 4 freshly generated predictions for {test_block_id}")
 
         # Check lead weeks 1 through 4 exist
         lead_buckets = {p["lead_time_bucket"] for p in preds}
@@ -67,7 +103,7 @@ class TestRealDataMLSmoke(unittest.TestCase):
             self.assertIn(expected_w, lead_buckets)
 
         # Check probability bounds and drivers
-        for p in preds[:10]:
+        for p in preds:
             self.assertGreaterEqual(p["onset_probability"], 0.0)
             self.assertLessEqual(p["onset_probability"], 100.0)
             self.assertGreaterEqual(p["break_probability"], 0.0)
@@ -77,9 +113,12 @@ class TestRealDataMLSmoke(unittest.TestCase):
             self.assertGreaterEqual(p["calibrated_confidence"], 0.0)
             self.assertLessEqual(p["calibrated_confidence"], 100.0)
             self.assertTrue(len(p["primary_driver"].strip()) > 0)
+            # Verify experimental tagging
+            self.assertIn("[EXPERIMENTAL]", p["primary_driver"])
+            self.assertTrue(str(p.get("advisory_code", "")).startswith("exp_"))
 
         # Check uniqueness constraint: (block_id, prediction_date, lead_time_bucket)
-        tuples = [(p["block_id"], p["prediction_date"], p["lead_time_bucket"]) for p in preds]
+        tuples = [(p["block_id"], p["prediction_date"], p["lead_time_bucket"]) for p in all_preds]
         self.assertEqual(len(tuples), len(set(tuples)), "Duplicate predictions found in database!")
 
 

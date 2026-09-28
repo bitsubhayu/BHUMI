@@ -27,7 +27,7 @@ import numpy as np
 from pipeline.ml.calibration.calibrator import ProbabilityCalibrator
 from pipeline.ml.changepoint.detector import ChangePointDetector
 from pipeline.ml.downscaling.classifiers import DownscalingEnsemble
-from pipeline.ml.downscaling.features import FEATURE_NAMES, FeatureExtractor
+from pipeline.ml.downscaling.features import FEATURE_NAMES, FeatureExtractor, MissingFeatureError
 from pipeline.ml.explainability.driver_attribution import DriverAttributionEngine
 from pipeline.ml.inference import ProductionInferenceEngine
 from pipeline.ml.teleconnections.analog_ensemble import AnalogEnsembleModel
@@ -35,6 +35,7 @@ from pipeline.ml.teleconnections.ensemble import TeleconnectionEnsemble
 from pipeline.ml.teleconnections.gru_model import SmallGRUModel
 from pipeline.ml.validation.imd_ground_truth import IMDGroundTruthAdapter
 from pipeline.ml.validation.metrics import compute_probabilistic_metrics
+from pipeline.ml.validation.readiness import ModelReadinessEvaluator, ModelReadinessStatus
 from pipeline.ml.validation.rolling_split import RollingOriginSplitter
 from pipeline.utils.config import PipelineConfig
 from pipeline.utils.validation import ValidationError, validate_live_prediction
@@ -162,7 +163,16 @@ class TestMLEngine(unittest.TestCase):
 
     def test_leakage_prevention(self) -> None:
         """Verify feature extraction at time t strictly looks back and does not touch forward targets."""
-        blocks = {"B1": {"block_id": "B1", "centroid_lat": 20.0, "centroid_lon": 80.0}}
+        blocks = {
+            "B1": {
+                "block_id": "B1",
+                "centroid_lat": 20.0,
+                "centroid_lon": 80.0,
+                "elevation_m": 300.0,
+                "slope_deg": 1.5,
+                "distance_to_coast_km": 200.0,
+            }
+        }
         archive = [{
             "block_id": "B1",
             "season_year": 2024,
@@ -176,7 +186,7 @@ class TestMLEngine(unittest.TestCase):
         telecon = {f"2024-04-{d:02d}": {"enso_oni": 0.0, "iod_dmi": 0.0, "mjo_phase": 1, "mjo_amplitude": 1.0} for d in range(1, 31)}
         analog = AnalogEnsembleModel()
 
-        X, y, meta = FeatureExtractor.extract_from_seasonal_archives(
+        X, y, meta, *_ = FeatureExtractor.extract_from_seasonal_archives(
             blocks_by_id=blocks,
             seasonal_archives=archive,
             telecon_by_date=telecon,
@@ -186,7 +196,6 @@ class TestMLEngine(unittest.TestCase):
 
         # For samples where t < 100, the lagged rainfall features must be strictly 0.0
         for i, m in enumerate(meta):
-            # Parse date to get day index
             dt = datetime.date.fromisoformat(m["date"])
             t = (dt - datetime.date(2024, 4, 1)).days
             if t < 100:
@@ -321,14 +330,234 @@ class TestMLEngine(unittest.TestCase):
             "distance_to_coast_km": 120.0,
         }])
         engine.loader.fetch_teleconnections_history = MagicMock(return_value=[
-            {"observation_date": "2026-09-27", "enso_oni": -0.6, "iod_dmi": -0.4, "mjo_phase": 3, "mjo_amplitude": 1.5}
+            {"observation_date": f"2026-09-{i:02d}", "enso_oni": -0.6, "iod_dmi": -0.4, "mjo_phase": 3, "mjo_amplitude": 1.5}
+            for i in range(1, 29)
         ])
-        engine.loader.fetch_live_weather_buffer = MagicMock(return_value=[])
+        # Provide authentic 8-day observation buffer so minimum history requirement (7 days) is satisfied
+        engine.loader.fetch_live_weather_buffer = MagicMock(return_value=[
+            {
+                "block_id": "IND_MH_PUN_001",
+                "observation_date": f"2026-09-{20 + i:02d}",
+                "rainfall_mm": 5.0,
+                "max_temp_c": 32.0,
+                "min_temp_c": 22.0,
+                "soil_moisture_idx": 45.0,
+                "data_source": "TEST",
+                "is_preliminary": False,
+            }
+            for i in range(8)
+        ])
 
-        res = engine.run_inference(as_of_date="2026-09-28")
+        res = engine.run_inference(as_of_date="2026-09-28", allow_experimental=True)
+        self.assertTrue(res["success"])
         self.assertEqual(res["blocks_processed"], 1)
         self.assertEqual(res["predictions_count"], 4)  # 4 lead weeks
         self.assertEqual(res["rows_loaded"], 4)        # dry-run simulated upsert
+
+    def test_gru_supervised_training_weights_differ(self) -> None:
+        """Verify supervised GRU training reduces loss and produces weights differing from random initialization."""
+        np.random.seed(42)
+        model = SmallGRUModel(input_dim=5, hidden_dim=8)
+        initial_w = model.W.copy()
+
+        # Generate synthetic sequences with consistent pattern
+        N = 25
+        X_seqs = np.random.randn(N, 30, 5) * 0.5
+        y_targets = np.zeros((N, 4, 4), dtype=np.float64)
+        for i in range(N):
+            for lead in range(4):
+                y_targets[i, lead, 0] = 0.7  # Active dominant
+                y_targets[i, lead, 1] = 0.1
+                y_targets[i, lead, 2] = 0.1
+                y_targets[i, lead, 3] = 0.1
+
+        metrics = model.train_supervised(X_seqs, y_targets, epochs=10, lr=0.02)
+        self.assertGreater(metrics["weight_delta_norm"], 0.0, "Trained weights must differ from random initialization")
+        self.assertLess(metrics["final_loss"], metrics["initial_loss"], "Training loss must decrease")
+        self.assertFalse(np.allclose(model.W, initial_w), "W weights must shift during backpropagation")
+
+    def test_gru_explicitly_disabled_when_insufficient_data(self) -> None:
+        """Verify GRU is automatically disabled from production ensemble when sample size is insufficient."""
+        ensemble = TeleconnectionEnsemble()
+        history = [
+            {"observation_date": f"2024-01-{i:02d}", "enso_oni": 0.5, "iod_dmi": 0.2, "mjo_phase": 3, "mjo_amplitude": 1.2}
+            for i in range(1, 25)
+        ]
+        # Only 5 sequence pairs (< 100 threshold)
+        X_seqs = np.zeros((5, 30, 5))
+        y_targets = np.zeros((5, 4, 4))
+        y_targets[:, :, 0] = 1.0
+
+        ensemble.fit(history, X_seqs=X_seqs, y_targets=y_targets)
+        self.assertFalse(ensemble.gru_enabled, "GRU must be disabled when sample size is insufficient")
+        self.assertEqual(ensemble.gru_weight, 0.0, "GRU weight must be 0.0 when disabled")
+        self.assertEqual(ensemble.analog_weight, 1.0, "Analog weight must be 1.0 when GRU is disabled")
+        self.assertTrue(ensemble.gru_status.startswith("DISABLED_INSUFFICIENT_TRAINING_DATA"))
+
+        # Predict should run 100% on analog ensemble without error
+        pred = ensemble.predict(history)
+        self.assertIn("week_1", pred["lead_probabilities"])
+        self.assertAlmostEqual(sum(pred["lead_probabilities"]["week_1"].values()), 1.0, places=2)
+
+    def test_model_readiness_gate_insufficient_data(self) -> None:
+        """Verify model readiness gate rejects 1-season / 2-block archives as non-production."""
+        res = ModelReadinessEvaluator.evaluate(
+            seasons=[2024],
+            blocks_count=2,
+            samples_count=96,
+            class_counts={0: 66, 1: 4, 2: 22, 3: 4},
+            test_class_counts={0: 15, 1: 0, 2: 5, 3: 0},
+            gru_status="DISABLED_INSUFFICIENT_TRAINING_DATA",
+        )
+        self.assertFalse(res["is_production_ready"], "1-season/2-block archive cannot be production ready")
+        self.assertEqual(res["model_tier"], "EXPERIMENTAL")
+        self.assertEqual(res["status"], ModelReadinessStatus.INSUFFICIENT_CLASS_DIVERSITY.value)
+        self.assertGreater(len(res["reasons"]), 0)
+        reasons_text = " ".join(res["reasons"])
+        self.assertIn("1 season", reasons_text)
+        self.assertIn("2 block", reasons_text)
+
+    def test_model_readiness_gate_production_ready(self) -> None:
+        """Verify model readiness gate approves when national criteria are satisfied."""
+        res = ModelReadinessEvaluator.evaluate(
+            seasons=[2021, 2022, 2023, 2024],
+            blocks_count=25,
+            samples_count=1200,
+            class_counts={0: 600, 1: 150, 2: 300, 3: 150},
+            test_class_counts={0: 60, 1: 15, 2: 30, 3: 15},
+            gru_status="TRAINED_SUPERVISED",
+        )
+        self.assertTrue(res["is_production_ready"])
+        self.assertEqual(res["model_tier"], "PRODUCTION")
+        self.assertEqual(res["status"], ModelReadinessStatus.READY_FOR_PRODUCTION.value)
+        self.assertEqual(len(res["reasons"]), 0)
+
+    def test_zero_block_production_failure(self) -> None:
+        """Verify inference engine fails clearly with RuntimeError when public.blocks is empty."""
+        config = PipelineConfig(
+            supabase_url="https://mock.supabase.co",
+            supabase_service_role_key="mock_key",
+            supabase_anon_key=None,
+            cdsapi_url=None,
+            cdsapi_key=None,
+            earthdata_username=None,
+            earthdata_password=None,
+            imd_api_key=None,
+            imd_pune_user=None,
+        )
+        engine = ProductionInferenceEngine(config=config, dry_run=True)
+        engine.loader.fetch_blocks = MagicMock(return_value=[])  # Empty blocks
+
+        with self.assertRaises(RuntimeError) as ctx:
+            engine.run_inference(allow_experimental=True)
+        self.assertIn("public.blocks is empty or unavailable", str(ctx.exception))
+
+    def test_missing_feature_rejection(self) -> None:
+        """Verify FeatureExtractor raises MissingFeatureError on missing block metadata, telecon, or observations."""
+        valid_block = {
+            "centroid_lat": 18.52,
+            "centroid_lon": 73.86,
+            "elevation_m": 560.0,
+            "slope_deg": 2.1,
+            "distance_to_coast_km": 120.0,
+        }
+        valid_telecon = {"enso_oni": 0.3, "iod_dmi": -0.2, "mjo_phase": 4, "mjo_amplitude": 1.4}
+        valid_analog = {"onset": 0.1, "active": 0.6, "break": 0.2, "heavy": 0.1}
+
+        # 1. Missing terrain field
+        bad_block = dict(valid_block)
+        bad_block["centroid_lat"] = None
+        with self.assertRaises(MissingFeatureError):
+            FeatureExtractor.extract_single_feature_vector(
+                block=bad_block, telecon=valid_telecon, analog_signals=valid_analog,
+                lagged_rain=[5.0] * 7, lagged_temp=[32.0] * 7, lagged_soil=[45.0] * 7, lagged_states=[0] * 7,
+                lead_week=1,
+            )
+
+        # 2. Missing oceanic teleconnection field
+        bad_telecon = dict(valid_telecon)
+        bad_telecon["enso_oni"] = None
+        with self.assertRaises(MissingFeatureError):
+            FeatureExtractor.extract_single_feature_vector(
+                block=valid_block, telecon=bad_telecon, analog_signals=valid_analog,
+                lagged_rain=[5.0] * 7, lagged_temp=[32.0] * 7, lagged_soil=[45.0] * 7, lagged_states=[0] * 7,
+                lead_week=1,
+            )
+
+        # 3. Insufficient observation history (< 7 days)
+        with self.assertRaises(MissingFeatureError):
+            FeatureExtractor.extract_single_feature_vector(
+                block=valid_block, telecon=valid_telecon, analog_signals=valid_analog,
+                lagged_rain=[5.0] * 3,  # Only 3 days
+                lagged_temp=[32.0] * 7, lagged_soil=[45.0] * 7, lagged_states=[0] * 7,
+                lead_week=1,
+            )
+
+    def test_prediction_safety_blocks_unready_model(self) -> None:
+        """Verify ProductionInferenceEngine blocks execution when model is unready and allow_experimental=False."""
+        config = PipelineConfig(
+            supabase_url="https://mock.supabase.co",
+            supabase_service_role_key="mock_key",
+            supabase_anon_key=None,
+            cdsapi_url=None,
+            cdsapi_key=None,
+            earthdata_username=None,
+            earthdata_password=None,
+            imd_api_key=None,
+            imd_pune_user=None,
+        )
+        engine = ProductionInferenceEngine(config=config, dry_run=True)
+        # Force model readiness to unready
+        engine.is_production_ready = False
+        engine.readiness = {
+            "status": "INSUFFICIENT_CLASS_DIVERSITY",
+            "is_production_ready": False,
+            "reasons": ["Archive has only 1 season", "Only 2 blocks"],
+        }
+
+        # Blocked without allow_experimental
+        result = engine.run_inference(allow_experimental=False)
+        self.assertFalse(result["success"])
+        self.assertEqual(result["status"], "BLOCKED_BY_READINESS_GATE")
+        self.assertEqual(result["predictions_count"], 0)
+        self.assertEqual(result["rows_loaded"], 0)
+
+    def test_no_fabricated_predictions_on_missing_observations(self) -> None:
+        """Verify blocks with empty observation buffers are skipped without generating fake predictions."""
+        config = PipelineConfig(
+            supabase_url="https://mock.supabase.co",
+            supabase_service_role_key="mock_key",
+            supabase_anon_key=None,
+            cdsapi_url=None,
+            cdsapi_key=None,
+            earthdata_username=None,
+            earthdata_password=None,
+            imd_api_key=None,
+            imd_pune_user=None,
+        )
+        engine = ProductionInferenceEngine(config=config, dry_run=True)
+        engine.loader.fetch_blocks = MagicMock(return_value=[{
+            "block_id": "IND_MH_PUN_001",
+            "block_name": "Haveli",
+            "centroid_lat": 18.52,
+            "centroid_lon": 73.86,
+            "elevation_m": 560.0,
+            "slope_deg": 1.5,
+            "distance_to_coast_km": 120.0,
+        }])
+        engine.loader.fetch_teleconnections_history = MagicMock(return_value=[
+            {"observation_date": f"2026-09-{i:02d}", "enso_oni": -0.6, "iod_dmi": -0.4, "mjo_phase": 3, "mjo_amplitude": 1.5}
+            for i in range(1, 29)
+        ])
+        # Live buffer is empty (0 observations)
+        engine.loader.fetch_live_weather_buffer = MagicMock(return_value=[])
+
+        res = engine.run_inference(as_of_date="2026-09-28", allow_experimental=True)
+        self.assertTrue(res["success"])
+        self.assertEqual(res["blocks_processed"], 0, "Block must be skipped when observations are missing")
+        self.assertEqual(res["blocks_skipped"], 1)
+        self.assertEqual(res["predictions_count"], 0, "No fake predictions must be generated")
+        self.assertEqual(res["rows_loaded"], 0)
 
 
 if __name__ == "__main__":

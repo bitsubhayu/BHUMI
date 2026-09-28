@@ -235,8 +235,14 @@ class AnalogEnsembleModel:
         current_state: np.ndarray,
         block_archives: Optional[Sequence[dict[str, Any]]] = None,
         exclude_year: Optional[int] = None,
+        day_of_season_idx: Optional[int] = None,
     ) -> dict[str, dict[str, float]]:
         """Project week_1 to week_4 weather state probabilities from the analog ensemble.
+        
+        If block_archives contains historical weather outcomes for matched analog years,
+        empirical state frequencies are computed directly from the historical records.
+        If historical analog outcome data is insufficient, probabilities are derived from
+        large-scale teleconnection modulation and explicitly marked as EXPERIMENTAL.
         
         Returns:
             Dictionary mapping 'week_1'..'week_4' to state probabilities:
@@ -245,8 +251,7 @@ class AnalogEnsembleModel:
         analogs = self.find_analogs(current_state, exclude_year=exclude_year)
         leads = ["week_1", "week_2", "week_3", "week_4"]
 
-        # Default climatological base probabilities if no archives present
-        # In Indian monsoon season: normal/active ~55%, break ~25%, onset ~10%, heavy ~10%
+        # Default climatological base probabilities
         base_probs = {
             "week_1": {"onset": 0.10, "active": 0.55, "break": 0.25, "heavy": 0.10},
             "week_2": {"onset": 0.10, "active": 0.55, "break": 0.25, "heavy": 0.10},
@@ -255,13 +260,72 @@ class AnalogEnsembleModel:
         }
 
         if not analogs:
+            self.last_prediction_provenance = {
+                "source": "CLIMATOLOGY_FALLBACK",
+                "is_experimental": True,
+                "limitation": "No historical teleconnection analogs found in database.",
+            }
             return base_probs
 
-        # Modulate probabilities based on analog teleconnection physics:
-        # Negative IOD / El Niño -> elevated break probability
-        # Positive IOD / La Niña -> elevated active / heavy rain probability
-        # MJO Phase 1-3 -> Indian Ocean suppressed convection (break signal)
-        # MJO Phase 4-6 -> Active convective phase over Indian subcontinent
+        # Check for real historical outcome coverage in block_archives
+        analog_years = {m.year: m.similarity_weight for m in analogs}
+        matching_archives = [
+            a for a in (block_archives or [])
+            if int(a.get("season_year", 0)) in analog_years and a.get("weather_state_code")
+        ]
+
+        # If we have real historical outcome sequences for the analog years
+        if matching_archives and day_of_season_idx is not None:
+            # Empirical outcome aggregation
+            output: dict[str, dict[str, float]] = {}
+            for lead_idx, lead in enumerate(leads):
+                start_day = min(213, day_of_season_idx + lead_idx * 7)
+                end_day = min(214, start_day + 7)
+
+                state_weights = {0: 0.0, 1: 0.0, 2: 0.0, 3: 0.0}
+                total_w = 0.0
+
+                for arch in matching_archives:
+                    yr = int(arch["season_year"])
+                    sim_w = analog_years.get(yr, 1.0)
+                    states = arch.get("weather_state_code", [])
+                    window = states[start_day:end_day]
+                    for s in window:
+                        if 0 <= s <= 3:
+                            state_weights[s] += sim_w
+                            total_w += sim_w
+
+                if total_w > 0:
+                    output[lead] = {
+                        "active": round(state_weights[0] / total_w, 4),
+                        "onset": round(state_weights[1] / total_w, 4),
+                        "break": round(state_weights[2] / total_w, 4),
+                        "heavy": round(state_weights[3] / total_w, 4),
+                    }
+                else:
+                    output[lead] = base_probs[lead]
+
+            self.last_prediction_provenance = {
+                "source": "REAL_HISTORICAL_ANALOG_OUTCOMES",
+                "is_experimental": False,
+                "analog_years_matched": list(analog_years.keys()),
+                "archives_used": len(matching_archives),
+            }
+            return output
+
+        # If no local block outcome data exists for the analog years,
+        # derive modulated probabilities from teleconnection dynamics and mark as EXPERIMENTAL
+        self.last_prediction_provenance = {
+            "source": "EXPERIMENTAL_TELECONNECTION_MODULATION",
+            "is_experimental": True,
+            "analog_years_matched": list(analog_years.keys()),
+            "limitation": (
+                "Insufficient historical local block outcome archives for matched analog years. "
+                "Probabilities are derived from large-scale teleconnection physical modulation "
+                "and must be treated as experimental."
+            ),
+        }
+
         weighted_oni = sum(m.similarity_weight * m.oni for m in analogs)
         weighted_dmi = sum(m.similarity_weight * m.dmi for m in analogs)
         weighted_mjo_phase = sum(m.similarity_weight * m.mjo_phase for m in analogs)

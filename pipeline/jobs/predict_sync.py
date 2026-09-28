@@ -23,6 +23,7 @@ def main() -> None:
     parser.add_argument("--as-of-date", type=str, default=None, help="Prediction date (YYYY-MM-DD)")
     parser.add_argument("--dry-run", action="store_true", help="Simulate without writing to database")
     parser.add_argument("--block-id", type=str, action="append", help="Specific block IDs to process")
+    parser.add_argument("--allow-experimental", action="store_true", help="Allow running with experimental/unready model")
     args = parser.parse_args()
 
     logger = get_logger("bhumi.jobs.predict_sync")
@@ -32,11 +33,23 @@ def main() -> None:
     engine = ProductionInferenceEngine(config=config, dry_run=args.dry_run)
 
     try:
-        result = engine.run_inference(as_of_date=args.as_of_date, block_ids=args.block_id)
-        logger.info(
-            f"Prediction run completed successfully: {result['predictions_count']} predictions "
-            f"for {result['blocks_processed']} blocks loaded into public.live_predictions"
+        result = engine.run_inference(
+            as_of_date=args.as_of_date,
+            block_ids=args.block_id,
+            allow_experimental=args.allow_experimental,
         )
+        if not result.get("success", False):
+            logger.warning(
+                f"[GATE] Prediction run blocked by Model Readiness Gate: {result.get('error')}. "
+                f"Model readiness: {result.get('readiness_status')}. "
+                f"Zero predictions written to public.live_predictions."
+            )
+        else:
+            logger.info(
+                f"Prediction run completed successfully: {result['predictions_count']} predictions "
+                f"for {result['blocks_processed']} blocks loaded into public.live_predictions "
+                f"(tier: {result.get('model_tier')})"
+            )
     except Exception as e:
         logger.error(f"Inference job encountered error: {e}", exc_info=True)
         sys.exit(1)

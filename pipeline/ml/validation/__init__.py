@@ -7,5 +7,12 @@ multi-dimensional probabilistic metrics (Brier score, ECE, log loss, ROC-AUC).
 from pipeline.ml.validation.rolling_split import RollingOriginSplitter
 from pipeline.ml.validation.metrics import compute_probabilistic_metrics
 from pipeline.ml.validation.imd_ground_truth import IMDGroundTruthAdapter
+from pipeline.ml.validation.readiness import ModelReadinessEvaluator, ModelReadinessStatus
 
-__all__ = ["RollingOriginSplitter", "compute_probabilistic_metrics", "IMDGroundTruthAdapter"]
+__all__ = [
+    "RollingOriginSplitter",
+    "compute_probabilistic_metrics",
+    "IMDGroundTruthAdapter",
+    "ModelReadinessEvaluator",
+    "ModelReadinessStatus",
+]

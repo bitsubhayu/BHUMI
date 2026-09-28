@@ -1,14 +1,14 @@
 """Seasonal Model Training & Rolling-Origin Validation Pipeline.
 
 Executes offline retraining for Pre-Kharif (May) and Pre-Rabi (October) cycles:
-  1. Pulls historical seasonal archives and teleconnections from Supabase.
-  2. Extracts time-respecting tabular features without future lookahead.
-  3. Applies RollingOriginSplitter across seasonal boundaries.
-  4. Trains Stage 1 Analog + GRU teleconnection sequence models.
-  5. Trains Stage 2 LightGBM + XGBoost 2-model downscaling ensemble.
-  6. Trains Stage 3 Platt / Isotonic probability calibrator.
-  7. Computes rigorous probabilistic validation metrics.
-  8. Serializes compact, versioned artifacts to pipeline/ml/artifacts/.
+  1. Ingests historical seasonal archives and teleconnections from Supabase.
+  2. Extracts time-respecting tabular features without lookahead bias.
+  3. Trains Stage 1 Analog Ensemble + Supervised GRU (or strictly disables GRU if data is insufficient).
+  4. Applies strict ModelReadinessEvaluator gates.
+  5. Trains Stage 2 LightGBM + XGBoost downscaling ensemble.
+  6. Trains Stage 3 Probability calibrator.
+  7. Computes rigorous multi-class probabilistic metrics.
+  8. Serializes compact, versioned artifacts with explicit readiness metadata.
 """
 
 from __future__ import annotations
@@ -26,13 +26,14 @@ from pipeline.ml.downscaling.classifiers import DownscalingEnsemble
 from pipeline.ml.downscaling.features import FEATURE_NAMES, FeatureExtractor
 from pipeline.ml.teleconnections.ensemble import TeleconnectionEnsemble
 from pipeline.ml.validation.metrics import compute_probabilistic_metrics
+from pipeline.ml.validation.readiness import ModelReadinessEvaluator
 from pipeline.ml.validation.rolling_split import RollingOriginSplitter
 from pipeline.utils.config import PipelineConfig, get_pipeline_config
 from pipeline.utils.logger import get_logger
 
 
 class SeasonalModelTrainer:
-    """Trainer orchestrating seasonal model updates and rolling validation."""
+    """Trainer orchestrating seasonal model updates, supervised training, and rolling validation."""
 
     def __init__(
         self,
@@ -49,7 +50,7 @@ class SeasonalModelTrainer:
         """Execute full training and evaluation pass against available real historical data."""
         self.logger.info("Starting seasonal training and rolling validation cycle...")
 
-        # 1. Fetch data
+        # 1. Fetch data from Supabase
         blocks = self.loader.fetch_blocks()
         blocks_by_id = {b["block_id"]: b for b in blocks}
 
@@ -62,13 +63,12 @@ class SeasonalModelTrainer:
             f"and {len(telecons)} teleconnection records from Supabase"
         )
 
-        # 2. Stage 1 Teleconnection Ensemble
+        # 2. Extract features and sequences
+        self.logger.info("Extracting tabular feature matrices and GRU sequences from seasonal archives...")
         telecon_ensemble = TeleconnectionEnsemble()
-        telecon_ensemble.fit(telecons)
+        telecon_ensemble.analog_model.fit(telecons)
 
-        # 3. Extract training dataset
-        self.logger.info("Extracting tabular feature matrices from seasonal archives...")
-        X, y, meta = FeatureExtractor.extract_from_seasonal_archives(
+        X, y, meta, X_gru, y_gru = FeatureExtractor.extract_from_seasonal_archives(
             blocks_by_id=blocks_by_id,
             seasonal_archives=archives,
             telecon_by_date=telecon_by_date,
@@ -77,36 +77,57 @@ class SeasonalModelTrainer:
         )
 
         n_samples = len(X)
-        self.logger.info(f"Extracted {n_samples} feature samples across available archives")
+        distinct_seasons = sorted(list({int(a["season_year"]) for a in archives}))
+        class_counts = {int(c): int(np.sum(y == c)) for c in (0, 1, 2, 3)}
 
-        training_coverage = {
-            "blocks_count": len(blocks),
-            "seasonal_archives_count": len(archives),
-            "seasons_present": sorted(list({int(a["season_year"]) for a in archives})),
-            "samples_generated": n_samples,
-            "archive_limitation_note": (
-                "Real historical training archive currently contains 2 representative blocks (2024 season). "
-                "Incremental training pipeline ready to expand as weekly ingestion accumulates."
-            ),
-        }
+        self.logger.info(
+            f"Extracted {n_samples} tabular samples and {len(X_gru)} GRU sequence pairs. "
+            f"Class distribution: {class_counts}"
+        )
 
-        if n_samples < 10:
-            self.logger.warning("Insufficient samples in Supabase archive for full training. Initializing baseline artifacts.")
-            # Create baseline ensemble & calibrator
+        # 3. Supervised GRU Training or Explicit Disabling
+        self.logger.info("Evaluating Stage 1 GRU sequence training...")
+        telecon_ensemble.fit(telecons, X_seqs=X_gru, y_targets=y_gru)
+        self.logger.info(f"Stage 1 GRU status: {telecon_ensemble.gru_status} (enabled={telecon_ensemble.gru_enabled})")
+
+        # 4. Strict Model Readiness Evaluation Gate
+        splitter = RollingOriginSplitter()
+        splits = list(splitter.split(meta)) if meta else []
+        active_split = splits[-1] if splits else None
+
+        test_class_counts: dict[int, int] = {}
+        if active_split and active_split.test_indices:
+            y_test_tmp = y[active_split.test_indices]
+            test_class_counts = {int(c): int(np.sum(y_test_tmp == c)) for c in (0, 1, 2, 3)}
+
+        readiness = ModelReadinessEvaluator.evaluate(
+            seasons=distinct_seasons,
+            blocks_count=len(archives),
+            samples_count=n_samples,
+            class_counts=class_counts,
+            test_class_counts=test_class_counts,
+            gru_status=telecon_ensemble.gru_status,
+        )
+
+        self.logger.info(
+            f"MODEL READINESS EVALUATION: status={readiness['status']}, "
+            f"tier={readiness['model_tier']}, is_production_ready={readiness['is_production_ready']}"
+        )
+        for r in readiness["reasons"]:
+            self.logger.warning(f"  [Readiness Deficiency] {r}")
+
+        # 5. Fit Downscaling Ensemble (LightGBM + XGBoost)
+        if n_samples < 10 or len(np.unique(y)) < 2:
+            self.logger.warning("Insufficient samples or class diversity in archive. Initializing baseline fallback.")
             downscaling_ensemble = DownscalingEnsemble()
             calibrator = ProbabilityCalibrator()
             metrics = {
-                "brier_score_multi": 0.12,
-                "log_loss": 0.85,
-                "expected_calibration_error": 0.05,
-                "status": "BASELINE_INITIALIZED",
+                "brier_score_multi": 0.25,
+                "log_loss": 1.38,
+                "expected_calibration_error": 0.50,
+                "status": "INSUFFICIENT_DATA_BASELINE",
             }
         else:
-            # 4. Rolling-origin temporal split
-            splitter = RollingOriginSplitter()
-            splits = list(splitter.split(meta))
-            active_split = splits[-1] if splits else None
-
             if active_split and len(active_split.train_indices) > 5:
                 X_train = X[active_split.train_indices]
                 y_train = y[active_split.train_indices]
@@ -121,19 +142,17 @@ class SeasonalModelTrainer:
                 X_test, y_test = X, y
                 meta_test = meta
 
-            # 5. Fit Downscaling Ensemble (LightGBM + XGBoost)
             self.logger.info("Fitting Stage 2 Downscaling Ensemble (LightGBM + XGBoost)...")
             downscaling_ensemble = DownscalingEnsemble()
             downscaling_ensemble.fit(X_train, y_train)
 
-            # 6. Fit Probability Calibrator
             self.logger.info("Fitting Stage 3 Probability Calibrator...")
             raw_train_probs = downscaling_ensemble.predict_proba(X_train)
             raw_val_probs = downscaling_ensemble.predict_proba(X_val)
             calibrator = ProbabilityCalibrator(method="auto")
             calibrator.fit(raw_train_probs, y_train, val_raw_probs=raw_val_probs, val_y_true=y_val)
 
-            # 7. Evaluate on held-out test split
+            # Evaluate on held-out test split
             raw_test_probs = downscaling_ensemble.predict_proba(X_test)
             metrics = compute_probabilistic_metrics(y_true=y_test, y_prob=raw_test_probs, meta_rows=meta_test)
             self.logger.info(
@@ -141,7 +160,7 @@ class SeasonalModelTrainer:
                 f"ECE={metrics.get('expected_calibration_error')}, LogLoss={metrics.get('log_loss')}"
             )
 
-        # 8. Save artifacts to pipeline/ml/artifacts/
+        # 6. Save versioned artifacts to pipeline/ml/artifacts/
         downscaling_ensemble.save(self.artifacts_dir)
         calibrator.save(self.artifacts_dir / "calibrator.json")
         telecon_ensemble.gru_model.save(self.artifacts_dir / "gru_weights.json")
@@ -150,7 +169,18 @@ class SeasonalModelTrainer:
             "model_version": "v1.0.0",
             "model_name": "BHUMI-Probabilistic-Downscaling-Engine",
             "trained_at": str(datetime.datetime.now(datetime.timezone.utc)),
-            "training_coverage": training_coverage,
+            "model_tier": readiness["model_tier"],
+            "model_readiness": readiness,
+            "training_coverage": {
+                "seasons_count": len(distinct_seasons),
+                "seasons_list": distinct_seasons,
+                "blocks_count": len(archives),
+                "samples_generated": n_samples,
+                "class_distribution": class_counts,
+                "gru_sequences_count": len(X_gru),
+                "gru_status": telecon_ensemble.gru_status,
+                "gru_enabled": telecon_ensemble.gru_enabled,
+            },
             "architecture": {
                 "stage_1": "AnalogEnsemble (Euclidean on ONI/DMI/MJO) + SmallGRU sequence model",
                 "stage_2": "LightGBM + XGBoost 2-model ensemble",
@@ -166,5 +196,5 @@ class SeasonalModelTrainer:
         with open(self.artifacts_dir / "metadata.json", "w", encoding="utf-8") as f:
             json.dump(metadata, f, indent=2)
 
-        self.logger.info("Saved model artifacts and metadata to pipeline/ml/artifacts/")
+        self.logger.info("Saved model artifacts and readiness metadata to pipeline/ml/artifacts/")
         return metadata
