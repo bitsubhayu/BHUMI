@@ -62,7 +62,15 @@ class SupabaseLoader:
         total_loaded = 0
         total_chunks = (len(records) + chunk_size - 1) // chunk_size
 
-        endpoint = f"{self.config.supabase_url.rstrip('/')}/rest/v1/{table_name}"
+        conflict_targets = {
+            "blocks": "block_id",
+            "seasonal_archives": "block_id,season_year",
+            "live_weather_buffer": "block_id,observation_date",
+            "teleconnections_history": "index_date",
+        }
+        conflict_col = conflict_targets.get(table_name)
+        query_param = f"?on_conflict={conflict_col}" if conflict_col else ""
+        endpoint = f"{self.config.supabase_url.rstrip('/')}/rest/v1/{table_name}{query_param}"
         self.logger.info(
             f"Loading {len(records)} records into public.{table_name} "
             f"in {total_chunks} chunks (dry_run={self.dry_run})"
