@@ -157,21 +157,22 @@ class TestSourceFidelityAndIntegrity(unittest.TestCase):
         adapter = GpmImergAdapter(config=self.config)
 
         # Mock download returning 403 EULA required
-        with patch.object(
-            adapter,
-            "download_and_extract_point",
-            side_effect=RuntimeError("NASA GES DISC EULA not yet accepted for user account. Authorize at: https://urs.earthdata.nasa.gov"),
-        ):
-            with patch.object(adapter, "query_granules", return_value=["https://data.gesdisc.earthdata.nasa.gov/test.nc4"]):
-                with patch.object(adapter, "get_earthdata_bearer_token", return_value="dummy_token"):
-                    res = adapter.fetch_daily_precipitation(
-                        target_date=datetime.date(2024, 7, 15),
-                        lat=18.52,
-                        lon=73.86,
-                    )
-                    self.assertFalse(res.success)
-                    self.assertIsNone(res.data)
-                    self.assertIn("NASA GES DISC EULA not yet accepted", res.error_message)
+        with patch.object(type(adapter), "is_configured", new_callable=unittest.mock.PropertyMock, return_value=True):
+            with patch.object(
+                adapter,
+                "download_and_extract_point",
+                side_effect=RuntimeError("NASA GES DISC EULA not yet accepted for user account. Authorize at: https://urs.earthdata.nasa.gov"),
+            ):
+                with patch.object(adapter, "query_granules", return_value=["https://data.gesdisc.earthdata.nasa.gov/test.nc4"]):
+                    with patch.object(adapter, "get_earthdata_bearer_token", return_value="dummy_token"):
+                        res = adapter.fetch_daily_precipitation(
+                            target_date=datetime.date(2024, 7, 15),
+                            lat=18.52,
+                            lon=73.86,
+                        )
+                        self.assertFalse(res.success)
+                        self.assertIsNone(res.data)
+                        self.assertIn("NASA GES DISC EULA not yet accepted", res.error_message)
 
     def test_gfs_uses_accumulated_precipitation(self):
         """Verifies that GfsAdapter queries APCP (accumulated precipitation) on step f024

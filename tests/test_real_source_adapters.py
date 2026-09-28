@@ -152,6 +152,8 @@ class TestRealDataIngestion(unittest.TestCase):
 
     def test_smap_earthdata_integration(self):
         """Validates that SmapAdapter connects using Earthdata credentials and parses soil moisture."""
+        if not self.config.has_earthdata:
+            self.skipTest("NASA Earthdata credentials not configured in environment (required for live SMAP test)")
         adapter = SmapAdapter(config=self.config)
         target_date = self.today - datetime.timedelta(days=5)
         res = adapter.fetch_soil_wetness_index(
@@ -175,6 +177,8 @@ class TestRealDataIngestion(unittest.TestCase):
         from authentic NetCDF4/HDF5 product, or transparently reports GES DISC EULA status
         without synthetic fallbacks.
         """
+        if not self.config.has_earthdata:
+            self.skipTest("NASA Earthdata credentials not configured in environment (required for live GPM test)")
         adapter = GpmImergAdapter(config=self.config)
         target_date = self.today - datetime.timedelta(days=3)
         res = adapter.fetch_daily_precipitation(
