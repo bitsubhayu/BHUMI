@@ -254,12 +254,25 @@ def run_daily_sync(
     pruned_count = loader.prune_live_buffer_older_than(days=config.live_buffer_retention_days)
     logger.info(f"[OK] Buffer retention enforced (prune operation status: {pruned_count})")
 
-    # 4. Note on ML Inference
-    logger.info("Step 4: ML Inference check: Step 3 is DATA PIPELINE ONLY. Skipping inference.")
+    # 4. Step 4: ML Forecasting & Inference Engine
+    logger.info("Step 4: Executing BHUMI probabilistic forecasting engine...")
+    try:
+        from pipeline.ml.inference import ProductionInferenceEngine
+        engine = ProductionInferenceEngine(config=config, dry_run=dry_run)
+        target_block_ids = [b["block_id"] for b in blocks]
+        inf_result = engine.run_inference(as_of_date=str(today), block_ids=target_block_ids)
+        logger.info(
+            f"[OK] Live inference successful: {inf_result['predictions_count']} predictions "
+            f"for {inf_result['blocks_processed']} blocks written to public.live_predictions "
+            f"(analog year: {inf_result.get('teleconnection_analog_year')})"
+        )
+    except Exception as e:
+        logger.error(f"[ERROR] Inference engine execution failed: {e}", exc_info=True)
+        logger.warning("Existing live_predictions rows preserved without corruption.")
 
     duration = time.time() - start_time
     logger.info("=" * 64)
-    logger.info(f"Daily Live Synchronization Finished in {duration:.2f}s")
+    logger.info(f"Daily Live Synchronization & Forecasting Finished in {duration:.2f}s")
     logger.info("=" * 64)
     return 0
 

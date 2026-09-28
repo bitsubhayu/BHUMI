@@ -1,0 +1,39 @@
+{
+  "is_fitted": true,
+  "lgb_weight": 0.5,
+  "xgb_weight": 0.5,
+  "classes": [
+    0,
+    1,
+    2,
+    3
+  ],
+  "feature_names": [
+    "centroid_lat",
+    "centroid_lon",
+    "elevation_m",
+    "slope_deg",
+    "distance_to_coast_km",
+    "enso_oni",
+    "iod_dmi",
+    "mjo_phase",
+    "mjo_amplitude",
+    "analog_onset_prob",
+    "analog_active_prob",
+    "analog_break_prob",
+    "analog_heavy_prob",
+    "climatology_mean_rain_mm",
+    "climatology_std_rain_mm",
+    "rain_lag_1d_mm",
+    "rain_lag_3d_sum_mm",
+    "rain_lag_7d_sum_mm",
+    "rain_lag_14d_sum_mm",
+    "temp_lag_1d_c",
+    "temp_lag_7d_mean_c",
+    "soil_moisture_latest",
+    "soil_moisture_7d_trend",
+    "recent_break_days_14d",
+    "recent_active_days_14d",
+    "lead_week"
+  ]
+}

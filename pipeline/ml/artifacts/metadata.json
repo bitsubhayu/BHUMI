@@ -1,0 +1,175 @@
+{
+  "model_version": "v1.0.0",
+  "model_name": "BHUMI-Probabilistic-Downscaling-Engine",
+  "trained_at": "2026-09-28 05:13:34.780743+00:00",
+  "training_coverage": {
+    "blocks_count": 4,
+    "seasonal_archives_count": 2,
+    "seasons_present": [
+      2024
+    ],
+    "samples_generated": 192,
+    "archive_limitation_note": "Real historical training archive currently contains 2 representative blocks (2024 season). Incremental training pipeline ready to expand as weekly ingestion accumulates."
+  },
+  "architecture": {
+    "stage_1": "AnalogEnsemble (Euclidean on ONI/DMI/MJO) + SmallGRU sequence model",
+    "stage_2": "LightGBM + XGBoost 2-model ensemble",
+    "stage_3": "Platt Scaling / Isotonic Regression with time-based split",
+    "stage_4": "Sequential Mann-Kendall & Pettitt Change-Point Detection"
+  },
+  "feature_version": "v1-terrain-telecon-lags-26feat",
+  "feature_names": [
+    "centroid_lat",
+    "centroid_lon",
+    "elevation_m",
+    "slope_deg",
+    "distance_to_coast_km",
+    "enso_oni",
+    "iod_dmi",
+    "mjo_phase",
+    "mjo_amplitude",
+    "analog_onset_prob",
+    "analog_active_prob",
+    "analog_break_prob",
+    "analog_heavy_prob",
+    "climatology_mean_rain_mm",
+    "climatology_std_rain_mm",
+    "rain_lag_1d_mm",
+    "rain_lag_3d_sum_mm",
+    "rain_lag_7d_sum_mm",
+    "rain_lag_14d_sum_mm",
+    "temp_lag_1d_c",
+    "temp_lag_7d_mean_c",
+    "soil_moisture_latest",
+    "soil_moisture_7d_trend",
+    "recent_break_days_14d",
+    "recent_active_days_14d",
+    "lead_week"
+  ],
+  "calibration_version": "v1-time-respecting",
+  "validation_metrics": {
+    "sample_count": 39,
+    "brier_score_multi": 0.2719,
+    "brier_scores_per_class": {
+      "brier_active": 0.3954,
+      "brier_onset": 0.0051,
+      "brier_break": 0.6549,
+      "brier_heavy": 0.0322
+    },
+    "log_loss": 2.0583,
+    "expected_calibration_error": 0.5385,
+    "reliability_curve": [
+      {
+        "bin_mid": 0.45,
+        "accuracy": 0.0,
+        "confidence": 0.4203,
+        "count": 3
+      },
+      {
+        "bin_mid": 0.55,
+        "accuracy": 0.0,
+        "confidence": 0.5461,
+        "count": 11
+      },
+      {
+        "bin_mid": 0.65,
+        "accuracy": 0.125,
+        "confidence": 0.6359,
+        "count": 8
+      },
+      {
+        "bin_mid": 0.75,
+        "accuracy": 0.2222,
+        "confidence": 0.762,
+        "count": 9
+      },
+      {
+        "bin_mid": 0.85,
+        "accuracy": 0.2857,
+        "confidence": 0.8389,
+        "count": 7
+      },
+      {
+        "bin_mid": 0.95,
+        "accuracy": 0.0,
+        "confidence": 0.9178,
+        "count": 1
+      }
+    ],
+    "roc_auc_macro": NaN,
+    "roc_auc_per_class": {
+      "auc_active": 0.7353,
+      "auc_break": 0.6176
+    },
+    "confusion_matrix": [
+      [
+        5,
+        0,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        0
+      ],
+      [
+        33,
+        0,
+        0,
+        1
+      ],
+      [
+        0,
+        0,
+        0,
+        0
+      ]
+    ],
+    "per_class_performance": {
+      "active": {
+        "precision": 0.1316,
+        "recall": 1.0,
+        "f1_score": 0.2326
+      },
+      "onset": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1_score": 0.0
+      },
+      "break": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1_score": 0.0
+      },
+      "heavy": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1_score": 0.0
+      }
+    },
+    "lead_time_performance": {
+      "week_1": {
+        "brier_score": 0.2334,
+        "accuracy": 0.2222,
+        "samples": 9
+      },
+      "week_2": {
+        "brier_score": 0.3048,
+        "accuracy": 0.1,
+        "samples": 10
+      },
+      "week_3": {
+        "brier_score": 0.2831,
+        "accuracy": 0.1,
+        "samples": 10
+      },
+      "week_4": {
+        "brier_score": 0.2623,
+        "accuracy": 0.1,
+        "samples": 10
+      }
+    }
+  }
+}

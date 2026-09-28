@@ -1,0 +1,37 @@
+{
+  "blocks_count": 4,
+  "sample_blocks": [
+    "IND_MH_PUN_001",
+    "IND_RJ_JOD_001",
+    "IND_RJ_JOD_002",
+    "IND_WB_KOL_003"
+  ],
+  "seasonal_archives_count": 2,
+  "seasons_available": [
+    2024
+  ],
+  "archived_blocks_count": 2,
+  "archived_blocks": [
+    "IND_MH_PUN_001",
+    "IND_RJ_JOD_001"
+  ],
+  "complete_214_day_rows": 2,
+  "array_completeness_pct": 100.0,
+  "null_counts": {
+    "rainfall": 0,
+    "max_temp": 0,
+    "soil_moisture": 0,
+    "weather_state": 0
+  },
+  "teleconnections_count": 731,
+  "telecon_min_date": "2024-01-01",
+  "telecon_max_date": "2025-12-31",
+  "telecon_missingness": {
+    "null_oni": 0,
+    "null_iod": 0,
+    "null_mjo_phase": 676,
+    "null_mjo_amp": 676
+  },
+  "live_buffer_sample_count": 3,
+  "existing_predictions_count": 16
+}

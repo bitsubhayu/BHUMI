@@ -204,3 +204,74 @@ def validate_teleconnection_record(record: dict[str, Any]) -> dict[str, Any]:
         "mjo_amplitude": round(amp, 3) if amp is not None else None,
         "source_agency": str(record["source_agency"]).strip(),
     }
+
+
+def validate_live_prediction(record: dict[str, Any]) -> dict[str, Any]:
+    """Validate a probabilistic prediction record for public.live_predictions."""
+    required = [
+        "block_id",
+        "prediction_date",
+        "lead_time_bucket",
+        "onset_probability",
+        "break_probability",
+        "heavy_spell_probability",
+        "calibrated_confidence",
+        "primary_driver",
+    ]
+    for key in required:
+        if key not in record:
+            raise ValidationError(f"Missing required key '{key}' in live prediction record")
+
+    block_id = validate_block_id(record["block_id"])
+    pred_date = validate_date_string(record["prediction_date"])
+
+    bucket = str(record["lead_time_bucket"]).strip()
+    valid_buckets = {"week_1", "week_2", "week_3", "week_4"}
+    if bucket not in valid_buckets:
+        raise ValidationError(f"Invalid lead_time_bucket '{bucket}', must be one of {valid_buckets}")
+
+    def _val_prob(name: str, val: Any) -> float:
+        try:
+            f = float(val)
+        except (ValueError, TypeError) as e:
+            raise ValidationError(f"Prediction probability '{name}' must be numeric, got {val}") from e
+        if f < 0.0 or f > 100.0:
+            raise ValidationError(f"Prediction probability '{name}' value {f} out of range [0.0, 100.0]")
+        return round(f, 2)
+
+    onset_prob = _val_prob("onset_probability", record["onset_probability"])
+    break_prob = _val_prob("break_probability", record["break_probability"])
+    heavy_prob = _val_prob("heavy_spell_probability", record["heavy_spell_probability"])
+    conf = _val_prob("calibrated_confidence", record["calibrated_confidence"])
+
+    primary = str(record["primary_driver"]).strip()
+    if not primary:
+        raise ValidationError("primary_driver cannot be empty")
+
+    secondary = str(record["secondary_driver"]).strip() if record.get("secondary_driver") else None
+    
+    analog_year = record.get("teleconnection_analog_year")
+    if analog_year is not None:
+        try:
+            analog_year = int(analog_year)
+            if analog_year < 1950 or analog_year > 2100:
+                raise ValidationError(f"teleconnection_analog_year {analog_year} out of range [1950, 2100]")
+        except (ValueError, TypeError) as e:
+            raise ValidationError(f"teleconnection_analog_year must be integer: {e}") from e
+
+    advisory_code = str(record["advisory_code"]).strip() if record.get("advisory_code") else None
+
+    return {
+        "block_id": block_id,
+        "prediction_date": str(pred_date),
+        "lead_time_bucket": bucket,
+        "onset_probability": onset_prob,
+        "break_probability": break_prob,
+        "heavy_spell_probability": heavy_prob,
+        "calibrated_confidence": conf,
+        "primary_driver": primary,
+        "secondary_driver": secondary,
+        "teleconnection_analog_year": analog_year,
+        "advisory_code": advisory_code,
+    }
+

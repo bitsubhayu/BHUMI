@@ -1,0 +1,63 @@
+name: BHUMI Seasonal Model Retraining
+# Cadence: Twice per year (Pre-Kharif in May, Pre-Rabi in October) as specified in TECH_STACK.md §4 & §5.
+# NEVER run daily to prevent catastrophic forgetting and maintain engineering stability.
+
+on:
+  schedule:
+    # 1 May (Pre-Kharif) at 00:00 UTC
+    - cron: '0 0 1 5 *'
+    # 1 October (Pre-Rabi) at 00:00 UTC
+    - cron: '0 0 1 10 *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Simulate retraining without saving model artifacts'
+        type: boolean
+        default: false
+
+concurrency:
+  group: bhumi-model-retraining
+  cancel-in-progress: false
+
+jobs:
+  retrain_models:
+    name: Execute Seasonal Offline Model Retraining
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r pipeline/requirements.txt
+
+      - name: Run Deterministic Unit Tests
+        run: |
+          python -m unittest discover -s tests/unit
+
+      - name: Execute Seasonal Retraining
+        run: |
+          EXTRA_ARGS=""
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            EXTRA_ARGS="--dry-run"
+          fi
+          python -m pipeline.jobs.retrain_models $EXTRA_ARGS
+
+      - name: Upload Trained Model Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: bhumi-model-artifacts
+          path: pipeline/ml/artifacts/
+          retention-days: 90

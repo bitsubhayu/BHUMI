@@ -1,0 +1,48 @@
+{
+  "method": "auto",
+  "is_fitted": true,
+  "selected_methods": {
+    "onset": "isotonic",
+    "break": "platt",
+    "heavy": "platt"
+  },
+  "models": {
+    "onset": {
+      "type": "isotonic",
+      "X_thresholds": [
+        0.008417759891177498,
+        0.263301089495376,
+        0.27951677999631636,
+        0.43878851487757015
+      ],
+      "y_thresholds": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ]
+    },
+    "break": {
+      "type": "platt",
+      "coef": [
+        [
+          3.475338956935256
+        ]
+      ],
+      "intercept": [
+        -2.555769797871356
+      ]
+    },
+    "heavy": {
+      "type": "platt",
+      "coef": [
+        [
+          2.7789563492689697
+        ]
+      ],
+      "intercept": [
+        -2.745625400054346
+      ]
+    }
+  }
+}
