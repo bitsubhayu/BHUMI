@@ -148,7 +148,7 @@ export function FilterCascade({ onBoundsChange }: FilterCascadeProps) {
     <div className="flex items-center gap-2 flex-wrap" role="search" aria-label="Filter by location">
       {/* Search combobox */}
       <div ref={searchRef} className="relative">
-        <div className="map-overlay flex items-center gap-2 px-3 py-2 min-w-[220px]">
+        <div className="map-filter-control flex items-center gap-2 px-3 py-2 min-w-[220px]">
           <Search size={14} strokeWidth={1.75} className="text-[var(--ink-muted)] flex-shrink-0" aria-hidden="true" />
           <input
             type="search"
@@ -195,7 +195,7 @@ export function FilterCascade({ onBoundsChange }: FilterCascadeProps) {
       </div>
 
       {/* State select */}
-      <div className="map-overlay">
+      <div className="map-filter-control relative">
         <label className="sr-only" htmlFor="filter-state">{t('filters.state')}</label>
         <select
           id="filter-state"
@@ -213,7 +213,7 @@ export function FilterCascade({ onBoundsChange }: FilterCascadeProps) {
       </div>
 
       {/* District select */}
-      <div className="map-overlay relative">
+      <div className="map-filter-control relative">
         <label className="sr-only" htmlFor="filter-district">{t('filters.district')}</label>
         <select
           id="filter-district"
@@ -232,7 +232,7 @@ export function FilterCascade({ onBoundsChange }: FilterCascadeProps) {
       </div>
 
       {/* Block select */}
-      <div className="map-overlay relative">
+      <div className="map-filter-control relative">
         <label className="sr-only" htmlFor="filter-block">{t('filters.block')}</label>
         <select
           id="filter-block"
@@ -254,7 +254,7 @@ export function FilterCascade({ onBoundsChange }: FilterCascadeProps) {
       {(selectedState || selectedDistrict || selectedBlock) && (
         <button
           onClick={handleClear}
-          className="map-overlay px-3 py-2 text-sm text-[var(--ink-muted)] flex items-center gap-1 hover:text-[var(--ink)]"
+          className="map-filter-control px-3 py-2 text-sm text-[var(--ink-muted)] flex items-center gap-1 hover:text-[var(--ink)]"
           type="button"
           aria-label={t('filters.clear')}
           id="filter-clear"

@@ -318,17 +318,37 @@ export const mockRepository: ForecastRepository = {
         };
       }
 
-      // If parentId matches a district or state
-      let blocks = MOCK_REGIONS.filter(
-        (r) => r.level === 'block' && r.parentId === parentId
-      );
-      if (blocks.length === 0) {
-        // Check if parentId is a block
-        const b = MOCK_REGIONS.find((r) => r.level === 'block' && r.id === parentId);
-        if (b) {
-          blocks = MOCK_REGIONS.filter(
-            (r) => r.level === 'block' && r.parentId === b.parentId
-          );
+      // Determine region type for parentId
+      const targetRegion = MOCK_REGIONS.find((r) => r.id === parentId);
+      let blocks: MockRegion[] = [];
+
+      if (targetRegion?.level === 'state') {
+        // Select all mock blocks whose stateIdx matches the selected state's stateIdx
+        blocks = MOCK_REGIONS.filter(
+          (r) => r.level === 'block' && r.stateIdx === targetRegion.stateIdx
+        );
+      } else if (targetRegion?.level === 'district') {
+        // Select all mock blocks whose parentId equals that district ID
+        blocks = MOCK_REGIONS.filter(
+          (r) => r.level === 'block' && r.parentId === targetRegion.id
+        );
+      } else if (targetRegion?.level === 'block') {
+        // Select that block's sibling blocks in the same district
+        blocks = MOCK_REGIONS.filter(
+          (r) => r.level === 'block' && r.parentId === targetRegion.parentId
+        );
+      } else {
+        // Fallback: try matching by parentId or blockId if targetRegion not found directly
+        blocks = MOCK_REGIONS.filter(
+          (r) => r.level === 'block' && r.parentId === parentId
+        );
+        if (blocks.length === 0) {
+          const b = MOCK_REGIONS.find((r) => r.level === 'block' && r.id === parentId);
+          if (b) {
+            blocks = MOCK_REGIONS.filter(
+              (r) => r.level === 'block' && r.parentId === b.parentId
+            );
+          }
         }
       }
       const features = blocks.map((b) => {
