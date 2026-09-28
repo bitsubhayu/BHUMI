@@ -32,7 +32,7 @@ import { getPublicEnv } from '../env.ts';
 import { resolveBlockGeometry } from '../geo.ts';
 import { evaluateAdvisoryRule, normalizeCropType } from '../advisory/engine.ts';
 import { VERIFIED_ADVISORY_RULES } from '../advisory/rules.ts';
-import { type ModelMetadata, FALLBACK_MODEL_METADATA, parseModelMetadata } from '../metadata.ts';
+import { type ModelMetadata, FALLBACK_MODEL_METADATA } from '../metadata.ts';
 
 export const ALL_STEP6_LOCALES: Locale[] = [
   'en',
@@ -66,10 +66,9 @@ export function clearSupabaseAdapterCache(): void {
 }
 
 /**
- * Loads authoritative model readiness metadata.
- * - Browser: fetches from existing server endpoint /api/readiness (never reads filesystem directly).
- * - Server/Node: reads pipeline/ml/artifacts/metadata.json via dynamic import (keeps fs server-only).
- * - Preserves legitimate zero values, reasons, and never invents fallback counts.
+ * Loads authoritative model readiness metadata exclusively via GET /api/readiness.
+ * The server-side route reads pipeline/ml/artifacts/metadata.json via getModelMetadata().
+ * Returns neutral fallback metadata on failure. Zero arbitrary or dynamic code execution.
  */
 export async function fetchAuthoritativeMetadata(): Promise<ModelMetadata> {
   const now = Date.now();
@@ -77,39 +76,20 @@ export async function fetchAuthoritativeMetadata(): Promise<ModelMetadata> {
     return cachedMetadata;
   }
 
-  // 1. Browser environment: use existing server data path (/api/readiness)
-  if (typeof window !== 'undefined') {
-    try {
+  try {
+    if (typeof fetch === 'function') {
       const res = await fetch('/api/readiness');
       if (res.ok) {
         const json = await res.json();
-        if (json.success && json.metadata) {
+        if (json && json.success && json.metadata) {
           cachedMetadata = json.metadata as ModelMetadata;
           lastMetaFetch = now;
           return cachedMetadata;
         }
       }
-    } catch (err) {
-      console.warn('[BHUMI Supabase Adapter] Could not fetch /api/readiness in browser:', err);
     }
-  } else {
-    // 2. Server-side or Node test environment: read pipeline/ml/artifacts/metadata.json
-    try {
-      const importDynamic = new Function('moduleName', 'return import(moduleName)');
-      const fs = (await importDynamic('node:fs')) as typeof import('node:fs');
-      const path = (await importDynamic('node:path')) as typeof import('node:path');
-      const metaPath = path.join(process.cwd(), 'pipeline', 'ml', 'artifacts', 'metadata.json');
-      if (fs.existsSync(metaPath)) {
-        const content = await fs.promises.readFile(metaPath, 'utf8');
-        const sanitized = content.replace(/:\s*NaN\b/g, ': null');
-        const parsed = JSON.parse(sanitized);
-        cachedMetadata = parseModelMetadata(parsed);
-        lastMetaFetch = now;
-        return cachedMetadata;
-      }
-    } catch {
-      // In environment where fs is unavailable
-    }
+  } catch (err) {
+    console.warn('[BHUMI Supabase Adapter] Could not fetch /api/readiness:', err);
   }
 
   return FALLBACK_MODEL_METADATA;

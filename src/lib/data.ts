@@ -17,21 +17,21 @@
 
 import fs from 'fs';
 import path from 'path';
-import { getSupabaseServerClient } from './supabase/server';
+import { getSupabaseServerClient } from './supabase/server.ts';
 import type {
   BlockRow,
   LivePredictionRow,
   LiveWeatherBufferRow,
   TeleconnectionsHistoryRow,
-} from './supabase/types';
+} from './supabase/types.ts';
 
 import {
   type ModelMetadata,
   FALLBACK_MODEL_METADATA,
   parseModelMetadata,
-} from './metadata';
+} from './metadata.ts';
 
-export * from './metadata';
+export * from './metadata.ts';
 
 /**
  * Reads authoritative model readiness metadata from pipeline artifacts.
@@ -172,7 +172,6 @@ export async function getRecentTeleconnections(limit = 14): Promise<Teleconnecti
   }
 }
 
-export * from './geo';
-export * from './advisory';
+export * from './geo.ts';
 
 

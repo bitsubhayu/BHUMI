@@ -11,7 +11,7 @@
  * - Administrative Boundary Integrity: Strictly avoids inventing synthetic administrative polygons or bounding boxes.
  */
 
-import type { BlockRow, LivePredictionRow } from './supabase/types';
+import type { BlockRow, LivePredictionRow } from './supabase/types.ts';
 
 export interface BlockMapFeatureProperties {
   block_id: string;

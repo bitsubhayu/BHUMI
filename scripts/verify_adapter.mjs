@@ -13,6 +13,23 @@ for (const line of content.split('\n')) {
   if (k && v.length > 0) process.env[k.trim()] = v.join('=').trim();
 }
 
+import { getModelMetadata } from '../src/lib/data.ts';
+
+// In standalone Node script, handle relative /api/readiness calls via getModelMetadata()
+const originalFetch = globalThis.fetch;
+globalThis.fetch = async (input, init) => {
+  const url = String(input);
+  if (url === '/api/readiness' || url.endsWith('/api/readiness')) {
+    const meta = await getModelMetadata();
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ success: true, metadata: meta }),
+    };
+  }
+  return originalFetch(input, init);
+};
+
 import { supabaseRepository } from '../src/lib/forecast/supabase-adapter.ts';
 
 async function verifyLiveIntegration() {

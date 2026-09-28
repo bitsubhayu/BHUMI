@@ -33,6 +33,7 @@ import { getRepository } from '../../src/lib/forecast/repository.ts';
 import { resolveBlockGeometry } from '../../src/lib/geo.ts';
 import { evaluateAdvisoryRule, normalizeCropType } from '../../src/lib/advisory/engine.ts';
 import { VERIFIED_ADVISORY_RULES } from '../../src/lib/advisory/rules.ts';
+import { getModelMetadata } from '../../src/lib/data.ts';
 
 // Ensure public env is configured for deterministic testing
 if (!process.env.NEXT_PUBLIC_SUPABASE_URL) {
@@ -43,6 +44,17 @@ if (!process.env.NEXT_PUBLIC_SUPABASE_URL) {
 const originalFetch = globalThis.fetch;
 globalThis.fetch = async (input, init) => {
   const url = String(input);
+  if (url.includes('/api/readiness')) {
+    const meta = await getModelMetadata();
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        success: true,
+        metadata: meta,
+      }),
+    };
+  }
   if (url.includes('/rest/v1/blocks')) {
     return {
       ok: true,
@@ -460,17 +472,24 @@ describe('7. Experimental Model Provenance & Authoritative Metadata', () => {
   });
 
   test('ForecastMeta preserves model readiness and training coverage metadata from source', async () => {
+    // 1. Verify authoritative server data layer
+    const serverMeta = await getModelMetadata();
+    assert.equal(serverMeta.modelTier, 'EXPERIMENTAL');
+    assert.equal(serverMeta.isProductionReady, false);
+    assert.equal(serverMeta.trainingCoverage.seasonsCount, 1);
+
+    // 2. Verify client repository obtains metadata via /api/readiness
     const meta = await supabaseRepository.getMeta();
     assert.ok(meta.issuedAt);
     assert.ok(meta.validFrom);
     assert.ok(meta.nextUpdateAt);
-    assert.equal(meta.modelTier, 'EXPERIMENTAL');
-    assert.equal(meta.isProductionReady, false);
+    assert.equal(meta.modelTier, serverMeta.modelTier);
+    assert.equal(meta.isProductionReady, serverMeta.isProductionReady);
     assert.ok(meta.trainingCoverage);
-    assert.equal(meta.trainingCoverage.seasonsCount, 1);
+    assert.equal(meta.trainingCoverage.seasonsCount, serverMeta.trainingCoverage.seasonsCount);
   });
 
-  test('deterministic test: modifying source metadata.json updates exposed ModelMetadata without modifying TypeScript constants', async () => {
+  test('authoritative server metadata loader reacts to source metadata.json modifications and propagates via /api/readiness', async () => {
     const metaPath = path.resolve(process.cwd(), 'pipeline/ml/artifacts/metadata.json');
     const originalContent = fs.readFileSync(metaPath, 'utf8');
 
@@ -481,18 +500,32 @@ describe('7. Experimental Model Provenance & Authoritative Metadata', () => {
       parsed.training_coverage.samples_generated = 99999;
       fs.writeFileSync(metaPath, JSON.stringify(parsed, null, 2));
 
+      // 1. Authoritative server loader reads modification directly
+      const serverUpdatedMeta = await getModelMetadata();
+      assert.equal(
+        serverUpdatedMeta.trainingCoverage.blocksCount,
+        8888,
+        'Authoritative server metadata loader must reflect changes to source metadata.json'
+      );
+      assert.equal(
+        serverUpdatedMeta.trainingCoverage.samplesGenerated,
+        99999,
+        'Authoritative server metadata loader must reflect changes to source metadata.json'
+      );
+
+      // 2. Client repository gets the updated metadata via /api/readiness
       clearSupabaseAdapterCache();
       const updatedMeta = await supabaseRepository.getMeta();
 
       assert.equal(
         updatedMeta.trainingCoverage.blocksCount,
         8888,
-        'Exposed ModelMetadata must reflect changes to source metadata.json'
+        'Client repository must receive updated metadata via /api/readiness'
       );
       assert.equal(
         updatedMeta.trainingCoverage.samplesGenerated,
         99999,
-        'Exposed ModelMetadata must reflect changes to source metadata.json'
+        'Client repository must receive updated metadata via /api/readiness'
       );
     } finally {
       // Restore original file
@@ -501,13 +534,17 @@ describe('7. Experimental Model Provenance & Authoritative Metadata', () => {
     }
 
     // Verify restoration
+    const restoredServerMeta = await getModelMetadata();
+    assert.equal(restoredServerMeta.trainingCoverage.blocksCount, 2);
+    assert.equal(restoredServerMeta.trainingCoverage.samplesGenerated, 96);
+
     const restoredMeta = await supabaseRepository.getMeta();
     assert.equal(restoredMeta.trainingCoverage.blocksCount, 2);
     assert.equal(restoredMeta.trainingCoverage.samplesGenerated, 96);
   });
 });
 
-describe('8. Browser-Side Security: No Service Role Key Exposure', () => {
+describe('8. Browser-Side Security: No Dynamic Code Execution, Filesystem Access, or Service Role Key Exposure', () => {
   test('supabase-adapter.ts does not contain SUPABASE_SERVICE_ROLE_KEY', () => {
     const adapterPath = path.resolve(process.cwd(), 'src/lib/forecast/supabase-adapter.ts');
     const content = fs.readFileSync(adapterPath, 'utf8');
@@ -530,6 +567,63 @@ describe('8. Browser-Side Security: No Service Role Key Exposure', () => {
 
     assert.ok(content.includes('getPublicEnv'));
     assert.ok(content.includes('supabaseAnonKey'));
+  });
+
+  test('zero dynamic code execution: adapter contains no eval, Function constructor, or new Function', () => {
+    const adapterPath = path.resolve(process.cwd(), 'src/lib/forecast/supabase-adapter.ts');
+    const content = fs.readFileSync(adapterPath, 'utf8');
+
+    assert.equal(
+      content.includes('eval('),
+      false,
+      'eval( must never appear in browser-facing forecast adapter'
+    );
+    assert.equal(
+      content.includes('new Function'),
+      false,
+      'new Function must never appear in browser-facing forecast adapter'
+    );
+    assert.equal(
+      /\bFunction\s*\(/.test(content),
+      false,
+      'Function(...) constructor call must never appear in browser-facing forecast adapter'
+    );
+    assert.equal(
+      /\b(?:setTimeout|setInterval)\s*\(\s*['"`]/.test(content),
+      false,
+      'String-based dynamic timer execution must not appear in client adapter'
+    );
+  });
+
+  test('zero filesystem or dynamic node imports: adapter does not read filesystem or import node:fs', () => {
+    const adapterPath = path.resolve(process.cwd(), 'src/lib/forecast/supabase-adapter.ts');
+    const content = fs.readFileSync(adapterPath, 'utf8');
+
+    assert.equal(
+      content.includes('node:fs'),
+      false,
+      'node:fs must not appear in browser-facing forecast adapter'
+    );
+    assert.equal(
+      content.includes('node:path'),
+      false,
+      'node:path must not appear in browser-facing forecast adapter'
+    );
+    assert.equal(
+      content.includes("from 'fs'") || content.includes('from "fs"'),
+      false,
+      'fs must not be imported in browser-facing forecast adapter'
+    );
+    assert.equal(
+      content.includes("from 'path'") || content.includes('from "path"'),
+      false,
+      'path must not be imported in browser-facing forecast adapter'
+    );
+    assert.equal(
+      /\bimport\s*\(/.test(content),
+      false,
+      'Dynamic import() must not appear in browser-facing forecast adapter'
+    );
   });
 });
 

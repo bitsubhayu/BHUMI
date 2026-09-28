@@ -6,8 +6,8 @@
  */
 
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
-import { getServerEnv } from '../env';
-import type { Database } from './types';
+import { getServerEnv } from '../env.ts';
+import type { Database } from './types.ts';
 
 export function getSupabaseServerClient(useServiceRole = false): SupabaseClient<Database> | null {
   const env = getServerEnv();
