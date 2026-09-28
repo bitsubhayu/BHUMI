@@ -11,7 +11,7 @@ SOURCE FIDELITY:
 - Fallback: Uses ECMWF-IFS mirror, strictly labeled as 'ECMWF_FALLBACK_OPEN_METEO'
   with `is_direct_ecmwf=False`. Only invoked if direct ECMWF Open Data is technically unreachable.
 - Never claims direct ECMWF when the actual request went to Open-Meteo.
-- Zero synthetic constant substitutions.
+- Zero synthetic constant substitutions. Max/min derived only from actual data fields.
 """
 
 from __future__ import annotations
@@ -99,7 +99,7 @@ class EcmwfAdapter(BaseSourceAdapter):
             for source in ["azure", "ecmwf"]:
                 try:
                     c = EcmwfOpenDataClient(source=source)
-                    c.retrieve(step=24, type="fc", param=["2t", "tp"], target=str(cache_file))
+                    c.retrieve(step=[12, 24], type="fc", param=["2t", "tp"], target=str(cache_file))
                     client = c
                     self.logger.info(f"Successfully retrieved ECMWF forecast GRIB2 from source: {source}")
                     break
@@ -111,7 +111,9 @@ class EcmwfAdapter(BaseSourceAdapter):
                 raise RuntimeError(f"All ECMWF Open Data sources failed. Last error: {last_err}")
 
         # Parse GRIB2 using eccodes
-        values: dict[str, float] = {}
+        all_temps: list[float] = []
+        all_precips: list[float] = []
+
         with open(cache_file, "rb") as f:
             while True:
                 gid = eccodes.codes_grib_new_from_file(f)
@@ -121,26 +123,31 @@ class EcmwfAdapter(BaseSourceAdapter):
                     sname = eccodes.codes_get(gid, "shortName")
                     nearest = eccodes.codes_grib_find_nearest(gid, lat, lon)
                     if nearest and len(nearest) > 0:
-                        values[sname] = nearest[0]["value"]
+                        val = float(nearest[0]["value"])
+                        if sname in ("2t", "t2m"):
+                            all_temps.append(val)
+                        elif sname in ("tp", "total_precipitation"):
+                            all_precips.append(val)
                 finally:
                     eccodes.codes_release(gid)
 
-        raw_t = values.get("2t")
-        raw_tp = values.get("tp")
-
-        if raw_t is None:
+        if not all_temps:
             raise ValueError(f"ECMWF GRIB missing 2m temperature ('2t') for ({lat}, {lon})")
-        if raw_tp is None:
-            raw_tp = 0.0
+        if not all_precips:
+            raise ValueError(f"ECMWF GRIB missing total precipitation ('tp') for ({lat}, {lon})")
 
-        temp_c = round(raw_t - 273.15, 2)
-        rain_mm = round(max(0.0, raw_tp * 1000.0), 2)
-        max_t = round(temp_c + 3.0, 2)
-        min_t = round(temp_c - 3.0, 2)
+        # Derive max/min strictly from actual forecast data fields
+        max_k = max(all_temps)
+        min_k = min(all_temps)
+        max_t = round(max_k - 273.15, 2)
+        min_t = round(min_k - 273.15, 2)
+
+        # Precipitation accumulated total (in meters to mm)
+        rain_mm = round(max(0.0, max(all_precips) * 1000.0), 2)
 
         self.logger.info(
             f"Extracted direct ECMWF Open Data forecast for ({lat:.2f}, {lon:.2f}): "
-            f"temp={temp_c}°C, rain={rain_mm} mm [Source: ECMWF_OPEN_DATA_DIRECT]"
+            f"max_temp={max_t}°C, min_temp={min_t}°C, rain={rain_mm} mm [Source: ECMWF_OPEN_DATA_DIRECT]"
         )
 
         return {
@@ -160,6 +167,7 @@ class EcmwfAdapter(BaseSourceAdapter):
         """Fetch ECMWF forecast from Open-Meteo fallback mirror.
 
         Strictly labeled as ECMWF_FALLBACK_OPEN_METEO.
+        Zero synthetic substitutions.
         """
         params = {
             "latitude": round(lat, 4),
@@ -184,12 +192,14 @@ class EcmwfAdapter(BaseSourceAdapter):
             idx = times.index(target_str)
 
         if idx >= len(max_temps) or max_temps[idx] is None:
-            raise ValueError(f"ECMWF forecast missing temperature for date {target_date}")
+            raise ValueError(f"ECMWF forecast missing max temperature for date {target_date}")
+        if idx >= len(min_temps) or min_temps[idx] is None:
+            raise ValueError(f"ECMWF forecast missing min temperature for date {target_date}")
         if idx >= len(precips) or precips[idx] is None:
             raise ValueError(f"ECMWF forecast missing precipitation for date {target_date}")
 
         max_t = float(max_temps[idx])
-        min_t = float(min_temps[idx]) if idx < len(min_temps) and min_temps[idx] is not None else round(max_t - 6.0, 2)
+        min_t = float(min_temps[idx])
         rain = float(precips[idx])
 
         self.logger.info(

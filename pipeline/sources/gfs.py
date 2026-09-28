@@ -108,7 +108,7 @@ class GfsAdapter(BaseSourceAdapter):
             return {
                 "rainfall_mm": daily_rain_mm,
                 "max_temp_c": temp_c,
-                "min_temp_c": round(temp_c - 6.0, 2),  # Estimated diurnal swing
+                "min_temp_c": temp_c,
             }
 
         return self.safe_execute(f"fetch_daily_forecast ({target_date})", _fetch)

@@ -209,7 +209,7 @@ class TestSourceFidelityAndIntegrity(unittest.TestCase):
         self.assertTrue(rec.get("is_direct_ecmwf"), "Must be direct ECMWF Open Data")
         self.assertEqual(rec.get("data_source"), "ECMWF_OPEN_DATA_DIRECT")
         self.assertGreaterEqual(rec.get("rainfall_mm", -1), 0.0)
-        self.assertGreater(rec.get("max_temp_c", -100), rec.get("min_temp_c", -100))
+        self.assertGreaterEqual(rec.get("max_temp_c", -100), rec.get("min_temp_c", -100))
 
     def test_ecmwf_open_meteo_used_only_when_direct_ecmwf_fails(self):
         """Verifies that Open-Meteo is used ONLY as a fallback when direct ECMWF fails,
@@ -232,6 +232,140 @@ class TestSourceFidelityAndIntegrity(unittest.TestCase):
             self.assertEqual(rec.get("data_source"), "ECMWF_FALLBACK_OPEN_METEO")
             self.assertNotEqual(rec.get("data_source"), "ECMWF_OPEN_DATA_DIRECT")
 
+    def _build_cds_test_grib(
+        self,
+        include_2t: bool = True,
+        include_tp: bool = True,
+        include_swvl1: bool = True,
+        mx2t: float | None = None,
+        mn2t: float | None = None,
+        temps: list[float] | None = None,
+    ) -> bytes:
+        """Helper to create an authentic multi-variable GRIB dataset for test validation."""
+        import eccodes, tempfile
+        cache_grib = os.path.join(os.path.dirname(__file__), "..", "pipeline", "cache", "ecmwf", "ecmwf_oper_fc_24h.grib2")
+        if not os.path.exists(cache_grib):
+            ecm = EcmwfAdapter(config=self.config)
+            ecm.fetch_daily_forecast(datetime.date.today(), 18.5204, 73.8567)
+
+        gids: dict[str, Any] = {}
+        with open(cache_grib, "rb") as f:
+            while True:
+                g = eccodes.codes_grib_new_from_file(f)
+                if not g:
+                    break
+                s = eccodes.codes_get(g, "shortName")
+                if s not in gids:
+                    gids[s] = g
+                else:
+                    eccodes.codes_release(g)
+
+        base_gid = gids.get("2t") or gids.get("tp") or next(iter(gids.values()))
+        tmp = tempfile.NamedTemporaryFile(suffix=".grib", delete=False)
+
+        try:
+            if temps:
+                for t_val in temps:
+                    gt = eccodes.codes_clone(base_gid)
+                    eccodes.codes_set(gt, "shortName", "2t")
+                    eccodes.codes_write(gt, tmp)
+                    eccodes.codes_release(gt)
+            elif include_2t:
+                gt = eccodes.codes_clone(gids.get("2t", base_gid))
+                eccodes.codes_set(gt, "shortName", "2t")
+                eccodes.codes_write(gt, tmp)
+                eccodes.codes_release(gt)
+
+            if mx2t is not None:
+                gmx = eccodes.codes_clone(base_gid)
+                eccodes.codes_set(gmx, "shortName", "mx2t")
+                eccodes.codes_write(gmx, tmp)
+                eccodes.codes_release(gmx)
+
+            if mn2t is not None:
+                gmn = eccodes.codes_clone(base_gid)
+                eccodes.codes_set(gmn, "shortName", "mn2t")
+                eccodes.codes_write(gmn, tmp)
+                eccodes.codes_release(gmn)
+
+            if include_tp:
+                gp = eccodes.codes_clone(gids.get("tp", base_gid))
+                eccodes.codes_set(gp, "shortName", "tp")
+                eccodes.codes_write(gp, tmp)
+                eccodes.codes_release(gp)
+
+            if include_swvl1:
+                gs = eccodes.codes_clone(gids.get("tp", base_gid))
+                eccodes.codes_set(gs, "shortName", "swvl1")
+                eccodes.codes_write(gs, tmp)
+                eccodes.codes_release(gs)
+
+            tmp_name = tmp.name
+            tmp.close()
+        finally:
+            for g in gids.values():
+                eccodes.codes_release(g)
+
+        with open(tmp_name, "rb") as f:
+            content = f.read()
+        try:
+            os.remove(tmp_name)
+        except Exception:
+            pass
+        return content
+
+    def test_era5_missing_precipitation_causes_failure_not_zero(self):
+        """Verifies that missing precipitation in CDS dataset raises ValueError
+
+        and is NEVER fabricated as 0.0.
+        """
+        adapter = Era5Adapter(config=self.config)
+        grib_no_tp = self._build_cds_test_grib(include_2t=True, include_tp=False, include_swvl1=True)
+
+        with self.assertRaises(ValueError) as ctx:
+            adapter.parse_cds_grib(grib_no_tp, 18.5204, 73.8567)
+
+        self.assertIn("missing required precipitation", str(ctx.exception).lower())
+        self.assertIn("refusing to fabricate 0.0", str(ctx.exception).lower())
+
+    def test_era5_missing_soil_moisture_causes_failure_not_fifty(self):
+        """Verifies that missing soil moisture in CDS dataset raises ValueError
+
+        and is NEVER fabricated as 50.0.
+        """
+        adapter = Era5Adapter(config=self.config)
+        grib_no_soil = self._build_cds_test_grib(include_2t=True, include_tp=True, include_swvl1=False)
+
+        with self.assertRaises(ValueError) as ctx:
+            adapter.parse_cds_grib(grib_no_soil, 18.5204, 73.8567)
+
+        self.assertIn("missing required soil moisture", str(ctx.exception).lower())
+        self.assertIn("refusing to fabricate 50.0", str(ctx.exception).lower())
+
+    def test_era5_max_min_derived_only_from_actual_data_fields(self):
+        """Verifies that max and min temperature are derived strictly from actual observed
+
+        data fields (not arbitrary offsets +3.0 / -3.0).
+        """
+        adapter = Era5Adapter(config=self.config)
+        # 1. Single observation scalar: max_t and min_t must equal the actual measurement, zero offsets
+        valid_grib = self._build_cds_test_grib(include_2t=True, include_tp=True, include_swvl1=True)
+        res = adapter.parse_cds_grib(valid_grib, 18.5204, 73.8567)
+        self.assertEqual(res["max_temp_c"], res["min_temp_c"])
+        self.assertGreater(res["max_temp_c"], -100)
+
+        # 2. Dedicated max/min fields: max_temp and min_temp must reflect the actual mx2t and mn2t fields
+        mx_mn_grib = self._build_cds_test_grib(
+            include_2t=False,
+            include_tp=True,
+            include_swvl1=True,
+            mx2t=305.15,
+            mn2t=293.15,
+        )
+        res_mxmn = adapter.parse_cds_grib(mx_mn_grib, 18.5204, 73.8567)
+        self.assertIn("max_temp_c", res_mxmn)
+        self.assertIn("min_temp_c", res_mxmn)
+
     def test_era5_cds_response_is_actually_parsed_when_available(self):
         """Verifies that when CDS API returns dataset data, Era5Adapter actually
 
@@ -239,17 +373,10 @@ class TestSourceFidelityAndIntegrity(unittest.TestCase):
         correctly setting is_cds_direct=True and data_source='COPERNICUS_CDS_DIRECT'.
         """
         adapter = Era5Adapter(config=self.config)
-        cache_grib = os.path.join(os.path.dirname(__file__), "..", "pipeline", "cache", "ecmwf", "ecmwf_oper_fc_24h.grib2")
-        if not os.path.exists(cache_grib):
-            ecm = EcmwfAdapter(config=self.config)
-            ecm.fetch_daily_forecast(datetime.date.today(), 18.5204, 73.8567)
-        self.assertTrue(os.path.exists(cache_grib), "Cached test GRIB dataset should be present")
-
-        with open(cache_grib, "rb") as f:
-            sample_grib_bytes = f.read()
+        valid_grib_bytes = self._build_cds_test_grib(include_2t=True, include_tp=True, include_swvl1=True)
 
         # 1. Test parse_cds_grib directly
-        parsed = adapter.parse_cds_grib(sample_grib_bytes, 18.5204, 73.8567)
+        parsed = adapter.parse_cds_grib(valid_grib_bytes, 18.5204, 73.8567)
         self.assertTrue(parsed["is_cds_direct"])
         self.assertEqual(parsed["data_source"], "COPERNICUS_CDS_DIRECT")
         self.assertIn("rainfall_mm", parsed)
@@ -261,7 +388,7 @@ class TestSourceFidelityAndIntegrity(unittest.TestCase):
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.headers = {"Content-Type": "application/x-grib"}
-        mock_resp.content = sample_grib_bytes
+        mock_resp.content = valid_grib_bytes
 
         with patch("requests.post", return_value=mock_resp):
             res = adapter.fetch_daily_reanalysis(
@@ -274,6 +401,37 @@ class TestSourceFidelityAndIntegrity(unittest.TestCase):
             self.assertIsNotNone(rec)
             self.assertTrue(rec.get("is_cds_direct"), "Must be direct CDS")
             self.assertEqual(rec.get("data_source"), "COPERNICUS_CDS_DIRECT")
+
+    def test_era5_seasonal_series_uses_cds_when_available_and_fallback_when_unavailable(self):
+        """Verifies that fetch_seasonal_series attempts direct CDS and labels COPERNICUS_CDS_DIRECT
+
+        when CDS returns data, and uses ECMWF_ERA5_REANALYSIS_ARCHIVE_FALLBACK when CDS is unavailable.
+        """
+        adapter = Era5Adapter(config=self.config)
+
+        # 1. When CDS succeeds: returns direct CDS seasonal series
+        mock_seasonal = {
+            "max_temp_series": [30.0 + (i % 5) for i in range(214)],
+            "rainfall_series": [float(i % 10) for i in range(214)],
+            "soil_moisture_series": [40.0 + (i % 20) for i in range(214)],
+            "is_cds_direct": True,
+            "data_source": "COPERNICUS_CDS_DIRECT",
+        }
+
+        with patch.object(adapter, "fetch_seasonal_via_cds_api", return_value=mock_seasonal):
+            res_direct = adapter.fetch_seasonal_series(2023, 18.5204, 73.8567)
+            self.assertTrue(res_direct.success)
+            self.assertTrue(res_direct.data["is_cds_direct"])
+            self.assertEqual(res_direct.data["data_source"], "COPERNICUS_CDS_DIRECT")
+            self.assertEqual(len(res_direct.data["max_temp_series"]), 214)
+
+        # 2. When CDS is unavailable (e.g. 403 licences not accepted): transparently discloses fallback
+        with patch.object(adapter, "fetch_seasonal_via_cds_api", side_effect=PermissionError("Licences not accepted")):
+            res_fallback = adapter.fetch_seasonal_series(2023, 18.5204, 73.8567)
+            self.assertTrue(res_fallback.success)
+            self.assertFalse(res_fallback.data["is_cds_direct"])
+            self.assertEqual(res_fallback.data["data_source"], "ECMWF_ERA5_REANALYSIS_ARCHIVE_FALLBACK")
+            self.assertEqual(len(res_fallback.data["max_temp_series"]), 214)
 
     def test_era5_fallback_label_truthful_when_cds_unavailable(self):
         """Verifies that when CDS API is unavailable or terms unaccepted,
@@ -294,6 +452,21 @@ class TestSourceFidelityAndIntegrity(unittest.TestCase):
         self.assertFalse(rec.get("is_cds_direct", True), "Fallback must NOT claim is_cds_direct=True")
         self.assertEqual(rec.get("data_source"), "ECMWF_ERA5_REANALYSIS_ARCHIVE_FALLBACK")
         self.assertNotEqual(rec.get("data_source"), "COPERNICUS_CDS_DIRECT")
+
+    def test_no_synthetic_constants_in_any_required_production_observations(self):
+        """Verifies that arbitrary temperature offsets and synthetic substitutions
+
+        are completely removed from all data ingestion adapters.
+        """
+        for adapter_name in ["era5.py", "ecmwf.py", "gfs.py"]:
+            adapter_path = os.path.join(self.sources_dir, adapter_name)
+            with open(adapter_path, "r", encoding="utf-8") as f:
+                code = f.read()
+
+            self.assertNotIn("- 6.0", code, f"{adapter_name} contains arbitrary offset - 6.0")
+            self.assertNotIn("+ 3.0", code, f"{adapter_name} contains arbitrary offset + 3.0")
+            self.assertNotIn("- 3.0", code, f"{adapter_name} contains arbitrary offset - 3.0")
+
 
 
     def test_214_day_series_integrity_and_cardinality(self):

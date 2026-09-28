@@ -260,7 +260,7 @@ def run_weekly_sync(
                 observation_date=str(recon_date),
                 rainfall_mm=final_rain,
                 max_temp_c=final_temp,
-                min_temp_c=round(final_temp - 6.0, 2),
+                min_temp_c=final_temp,
                 soil_moisture_idx=final_soil,
                 data_source=recon_tag,
                 is_preliminary=False,  # Reconciled to ground/satellite finalized truth

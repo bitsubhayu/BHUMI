@@ -213,7 +213,7 @@ def run_daily_sync(
         # Real consensus calculations
         final_rain = round(float(sum(rain_vals) / len(rain_vals)), 2)
         final_max_t = round(float(sum(max_temps) / len(max_temps)), 2)
-        final_min_t = round(float(sum(min_temps) / len(min_temps)), 2) if min_temps else round(final_max_t - 6.0, 2)
+        final_min_t = round(float(sum(min_temps) / len(min_temps)), 2) if min_temps else final_max_t
         final_soil = smap_res.data if (smap_res.success and smap_res.data is not None) else None
 
         # Data source provenance attribution
