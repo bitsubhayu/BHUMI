@@ -66,7 +66,7 @@ class SupabaseLoader:
             "blocks": "block_id",
             "seasonal_archives": "block_id,season_year",
             "live_weather_buffer": "block_id,observation_date",
-            "teleconnections_history": "index_date",
+            "teleconnections_history": "observation_date",
         }
         conflict_col = conflict_targets.get(table_name)
         query_param = f"?on_conflict={conflict_col}" if conflict_col else ""
