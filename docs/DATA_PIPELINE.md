@@ -91,3 +91,23 @@ As dictated by PRD §2/§3 and TECH_STACK §3:
 * There are ~250,000 panchayats in India vs ~6,700 blocks (a 37× multiplier).
 * Panchayat values are generated on demand at serve-time by adjusting the parent block value with static topographic features (elevation/slope BCSD lapse-rate disaggregation).
 * The pipeline enforces this constraint via `assert_no_panchayat_storage()` in `pipeline/transforms/spatial.py`.
+
+---
+
+## 5. Static Terrain & Boundary Ingestion Pipeline (Phase B)
+
+Phase B established the official simplified block boundary polygons and static terrain attributes required for on-demand BCSD panchayat downscaling and topographic lapse rates:
+
+| Data Element | Authoritative Source Dataset | Extraction & Processing Method | Production Coverage |
+| :--- | :--- | :--- | :--- |
+| **Boundary Geometry** | ISRO Bhuvan CD Block Vector Parquet (`LGD_Blocks.parquet`) | Matched to canonical LGD block codes, multipart unified via `shapely.unary_union`, simplified via Douglas-Peucker (`tolerance=0.0010°`, ~110m resolution). Ingested as EPSG:4326 `MultiPolygon`. | 7,073 active blocks (100% of production). 250 pending staged with NULL. |
+| **Mean Elevation (`elevation_m`)** | EarthEnv Topography / CGIAR-CSI SRTM v4.1 5KM DEM | Bilinear raster extraction at block centroid coordinates using `rasterio`. Range: -0.1m to 5,729.2m across India. | 7,073 / 7,073 (100% coverage, 0 NaNs). |
+| **Mean Slope (`slope_deg`)** | EarthEnv Topography / CGIAR-CSI SRTM v4.1 5KM Slope | Bilinear raster extraction at block centroid coordinates using `rasterio`. Range: 0.00° to 43.97°. | 7,073 / 7,073 (100% coverage, 0 NaNs). |
+| **Distance to Coast (`distance_to_coast_km`)** | Natural Earth 10m Coastlines v5.1.2 | Nearest-edge search via Shapely `STRtree` spatial indexing with great-circle haversine calculation. Range: 0.01 km to 1,485.48 km. | 7,073 / 7,073 (100% coverage, 0 NaNs). |
+| **Agro-Climatic Zone** | Planning Commission / ICAR 15 Agro-Climatic Zones | State and district administrative lookup using official NARP / ICAR classification. | 7,073 / 7,073 (100% coverage, 0 placeholders). |
+
+### Pipeline Modules & Tools
+- `pipeline/transforms/terrain.py`: Core functions (`extract_elevation_and_slope`, `compute_distance_to_coast`, `get_agro_climatic_zone`).
+- `scripts/upsert_phase_b_boundaries_and_terrain.py`: Batch PostgREST boundary and terrain feature upsert with payload optimization.
+- `scripts/validate_production_db.mjs`: Automated PostgREST assertion test verifying 7,073 MultiPolygons, valid ranges, and zero orphaned records.
+

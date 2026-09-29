@@ -29,19 +29,44 @@ The database architecture is designed specifically to solve the tension between 
 ## 2. Table-by-Table Reference
 
 ### 2.1 `public.blocks`
-- **Purpose**: Master registry of all ~6,700 administrative blocks in India. Stores static terrain features and simplified boundaries.
-- **Primary Key**: `block_id` (Local Government Directory / LGD code)
+- **Purpose**: Authoritative master registry of India-wide administrative development blocks.
+- **Authoritative Administrative Source**: Government of India — Ministry of Panchayati Raj — Local Government Directory (LGD) (`https://lgdirectory.gov.in/`).
+- **Source Retrieval Date**: 2026-09-28 (Report: `allBlockofIndia.xlsx`, All Development Blocks of India).
+- **Discovered Administrative Inventory**: 7,338 raw records across 35 States/UTs and 765 Districts, representing 7,323 unique LGD development blocks. (15 duplicate codes across 30 rows accounted for by ongoing district bifurcation transitions).
+- **Primary Key**: `block_id` (Canonical Local Government Directory / LGD Development Block Code). Synthetic identifiers (e.g. `IND_...`) are strictly prohibited in the production master.
+- **Spatial Provenance**: Derived from official ISRO Bhuvan Community-Development Block boundary vector layers (`LGD_Blocks.parquet`). Centroids (`centroid_lat`, `centroid_lon`) represent geometric centroids or internal representative points on surface.
+- **Spatial Match Status**:
+  - Matched & Active in `public.blocks`: 7,073 blocks (96.59% nationwide spatial coverage).
+  - Pending Spatial Match: 250 newly created/reorganized blocks (3.41%) are safely preserved in staging (`data/phase_a_block_master.csv`) with status `PENDING_OFFICIAL_BOUNDARY_MATCH` until official boundary digitization in Phase B.
+  - Rejected: 0 records.
 - **Key Columns**:
-  - `block_name`, `district_name`, `state_name`
-  - `centroid_lat`, `centroid_lon`: Geographic center coordinates
-  - `elevation_m`: Mean elevation in meters (baseline for BCSD downscaling)
-  - `slope_deg`: Mean slope in degrees
-  - `distance_to_coast_km`: Distance to coastline (for marine moisture gradient)
-  - `agro_climatic_zone`: ICAR agro-climatic zone classification
-  - `boundary_geom`: `geometry(MultiPolygon, 4326)` simplified with `ST_SimplifyPreserveTopology`
+  - `block_name`, `district_name`, `state_name`: Official normalized administrative hierarchy.
+  - `centroid_lat`, `centroid_lon`: Geographic center coordinates (WGS 84).
+  - `elevation_m`: Mean elevation in meters, populated in Phase B from EarthEnv CGIAR-CSI SRTM 5KM DEM. Range: -0.1m to 5,729.2m (100% coverage, 0 NaNs).
+  - `slope_deg`: Mean slope in degrees, populated in Phase B from EarthEnv CGIAR-CSI SRTM 5KM Slope. Range: 0.00° to 43.97° (100% coverage, 0 NaNs).
+  - `distance_to_coast_km`: Great-circle distance to coastline in km, populated in Phase B from Natural Earth 10m Coastlines. Range: 0.01 km to 1,485.48 km (100% coverage, 0 NaNs).
+  - `agro_climatic_zone`: ICAR Planning Commission 15 Agro-Climatic Zones classification (NARP framework), populated in Phase B (100% coverage, 0 placeholders).
+  - `boundary_geom`: `geometry(MultiPolygon, 4326)` populated in Phase B for all 7,073 active production blocks. 250 pending blocks remain staged outside production with NULL boundaries.
+- **Critical Distinction**:
+  > [!IMPORTANT]
+  > **Having an administrative block record does NOT mean that historical/weather/prediction data already exists for that block.**
+  > Administrative block inventory establishes jurisdictional coverage; historical weather archives and ML forecasts are ingested and scaled in subsequent project phases.
 - **Indexes**:
   - GIST spatial index on `boundary_geom`
   - B-tree on `(state_name, district_name)`, `block_name`, `(centroid_lat, centroid_lon)`
+
+### 2.1.1 Phase B Topology Simplification & Storage Budget
+- **Boundary Ingestion Source**: ISRO Bhuvan Community-Development Block vector dataset (`data/raw_lgd/LGD_Blocks.parquet`), matched against Phase A authoritative LGD master codes.
+- **Simplification Strategy**: Topology-preserving Douglas-Peucker simplification using Shapely with tolerance `0.0010°` (~110m ground resolution). Multi-part fragments unified with `shapely.unary_union`. All 7,073 geometries validated as standard `MultiPolygon` in EPSG:4326.
+- **Storage Metrics**:
+  - Raw uncompressed GeoJSON: ~140 MB
+  - Simplified GeoJSON payload: **28.46 MB**
+  - PostGIS WKB binary storage in Supabase: **~18.5 MB**
+  - Free-tier Storage Footprint: Total public schema storage is **~35 MB**, comfortably below the 500 MB quota (93% headroom remaining).
+- **PostgREST Client Performance Contract**:
+  - Full-country hierarchy (`listRegions`, dropdown population) queries only block scalar attributes (`select=block_id,block_name,district_name,state_name,centroid_lat,centroid_lon,elevation_m,slope_deg,distance_to_coast_km,agro_climatic_zone`), transferring ~700 KB in < 5s.
+  - National overview map (`getRegionsGeoJSON(null)`) renders 764 district centroid points without transferring block polygons.
+  - District/block view (`getRegionsGeoJSON(districtId)`) loads authentic PostGIS `MultiPolygon` boundaries on demand for the target district (~50 KB in ~500ms) and caches them in client memory.
 
 ### 2.2 `public.seasonal_archives`
 - **Purpose**: Compact historical archive of past monsoon seasons (2014–2025) used for analog matching, backtesting, and calibration.

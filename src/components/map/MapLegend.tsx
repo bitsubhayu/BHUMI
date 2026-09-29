@@ -28,7 +28,7 @@ export function MapLegend({ activeHazard }: MapLegendProps) {
     return (
       <button
         onClick={() => setExpanded(true)}
-        className="map-overlay flex items-center gap-2 px-3 py-2 text-sm font-medium text-[var(--ink)]"
+        className="map-overlay bottom-0 flex items-center gap-2 px-3 py-2 text-sm font-medium text-[var(--ink)]"
         aria-label="Show risk legend"
         aria-expanded="false"
         type="button"
@@ -46,7 +46,7 @@ export function MapLegend({ activeHazard }: MapLegendProps) {
   }
 
   return (
-    <div className="map-overlay p-3 min-w-[160px]" id="map-legend-panel" role="dialog" aria-label="Risk legend">
+    <div className="map-overlay bottom-0 p-3 min-w-[160px]" id="map-legend-panel" role="dialog" aria-label="Risk legend">
       <div className="flex items-center justify-between mb-2">
         <span className="text-xs font-semibold text-[var(--ink-muted)] uppercase tracking-wide">
           {hazardLabel}

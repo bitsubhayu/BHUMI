@@ -47,11 +47,16 @@ export const ALL_STEP6_LOCALES: Locale[] = [
   'or',
 ];
 
-// In-memory cache with independent timestamps per dataset
+// In-memory cache with independent timestamps per dataset and in-flight promise deduplication
 let cachedBlocks: BlockRow[] | null = null;
 let cachedPredictions: LivePredictionRow[] | null = null;
 let cachedRules: AdvisoryRuleRow[] | null = null;
 let cachedMetadata: ModelMetadata | null = null;
+const cachedBlockBoundaries = new Map<string, unknown>();
+
+let blocksInFlight: Promise<BlockRow[]> | null = null;
+let predictionsInFlight: Promise<LivePredictionRow[]> | null = null;
+let rulesInFlight: Promise<AdvisoryRuleRow[]> | null = null;
 
 let lastBlocksFetch = 0;
 let lastPredictionsFetch = 0;
@@ -68,6 +73,10 @@ export function clearSupabaseAdapterCache(): void {
   cachedPredictions = null;
   cachedRules = null;
   cachedMetadata = null;
+  cachedBlockBoundaries.clear();
+  blocksInFlight = null;
+  predictionsInFlight = null;
+  rulesInFlight = null;
   lastBlocksFetch = 0;
   lastPredictionsFetch = 0;
   lastRulesFetch = 0;
@@ -144,7 +153,7 @@ export async function fetchPostgrest<T>(path: string, pageSize = 1000): Promise<
 
       if (!res.ok && res.status !== 206) {
         if (offset === 0) {
-          console.warn(`[BHUMI Supabase Adapter] Fetch failed for ${path}: ${res.statusText}`);
+          console.warn(`[BHUMI Supabase Adapter] Fetch failed for ${path}: status=${res.status} ${res.statusText}`);
           return [];
         }
         throw new Error(`Pagination failed for ${path} at offset ${offset}: HTTP ${res.status} ${res.statusText}`);
@@ -199,14 +208,26 @@ async function getCachedBlocks(): Promise<BlockRow[]> {
   if (cachedBlocks && now - lastBlocksFetch < BLOCKS_CACHE_TTL_MS) {
     return cachedBlocks;
   }
-  const rows = await fetchPostgrest<BlockRow>(
-    'blocks?select=*&order=state_name.asc,district_name.asc,block_name.asc'
-  );
-  if (rows.length > 0) {
-    cachedBlocks = rows;
-    lastBlocksFetch = now;
+  if (blocksInFlight) {
+    return blocksInFlight;
   }
-  return cachedBlocks ?? [];
+
+  blocksInFlight = (async () => {
+    try {
+      const rows = await fetchPostgrest<BlockRow>(
+        'blocks?select=block_id,block_name,district_name,state_name,centroid_lat,centroid_lon,elevation_m,slope_deg,distance_to_coast_km,agro_climatic_zone&order=state_name.asc,district_name.asc,block_name.asc'
+      );
+      if (rows.length > 0) {
+        cachedBlocks = rows;
+        lastBlocksFetch = Date.now();
+      }
+      return cachedBlocks ?? [];
+    } finally {
+      blocksInFlight = null;
+    }
+  })();
+
+  return blocksInFlight;
 }
 
 async function getCachedPredictions(): Promise<LivePredictionRow[]> {
@@ -214,24 +235,35 @@ async function getCachedPredictions(): Promise<LivePredictionRow[]> {
   if (cachedPredictions && now - lastPredictionsFetch < PREDICTIONS_CACHE_TTL_MS) {
     return cachedPredictions;
   }
-
-  // To protect browser memory and network performance, find the latest prediction_date first
-  const latestDateRows = await fetchPostgrest<{ prediction_date: string }>(
-    'live_predictions?select=prediction_date&order=prediction_date.desc&limit=1'
-  );
-
-  let queryPath = 'live_predictions?select=*&order=prediction_date.desc,lead_time_bucket.asc';
-  if (latestDateRows.length > 0 && latestDateRows[0].prediction_date) {
-    const latestDate = latestDateRows[0].prediction_date;
-    queryPath = `live_predictions?select=*&prediction_date=eq.${latestDate}&order=lead_time_bucket.asc,block_id.asc`;
+  if (predictionsInFlight) {
+    return predictionsInFlight;
   }
 
-  const rows = await fetchPostgrest<LivePredictionRow>(queryPath);
-  if (rows.length > 0) {
-    cachedPredictions = rows;
-    lastPredictionsFetch = now;
-  }
-  return cachedPredictions ?? [];
+  predictionsInFlight = (async () => {
+    try {
+      // To protect browser memory and network performance, find the latest prediction_date first
+      const latestDateRows = await fetchPostgrest<{ prediction_date: string }>(
+        'live_predictions?select=prediction_date&order=prediction_date.desc&limit=1'
+      );
+
+      let queryPath = 'live_predictions?select=*&order=prediction_date.desc,lead_time_bucket.asc';
+      if (latestDateRows.length > 0 && latestDateRows[0].prediction_date) {
+        const latestDate = latestDateRows[0].prediction_date;
+        queryPath = `live_predictions?select=*&prediction_date=eq.${latestDate}&order=lead_time_bucket.asc,block_id.asc`;
+      }
+
+      const rows = await fetchPostgrest<LivePredictionRow>(queryPath);
+      if (rows.length > 0) {
+        cachedPredictions = rows;
+        lastPredictionsFetch = Date.now();
+      }
+      return cachedPredictions ?? [];
+    } finally {
+      predictionsInFlight = null;
+    }
+  })();
+
+  return predictionsInFlight;
 }
 
 async function getCachedRules(): Promise<AdvisoryRuleRow[]> {
@@ -239,15 +271,27 @@ async function getCachedRules(): Promise<AdvisoryRuleRow[]> {
   if (cachedRules && cachedRules.length > 0 && now - lastRulesFetch < RULES_CACHE_TTL_MS) {
     return cachedRules;
   }
-  const rows = await fetchPostgrest<AdvisoryRuleRow>(
-    'advisory_rules?select=*&is_active=eq.true&order=crop_category.asc,rule_code.asc'
-  );
-  if (rows.length > 0) {
-    cachedRules = rows;
-    lastRulesFetch = now;
-    return cachedRules;
+  if (rulesInFlight) {
+    return rulesInFlight;
   }
-  return VERIFIED_ADVISORY_RULES;
+
+  rulesInFlight = (async () => {
+    try {
+      const rows = await fetchPostgrest<AdvisoryRuleRow>(
+        'advisory_rules?select=*&is_active=eq.true&order=crop_category.asc,rule_code.asc'
+      );
+      if (rows.length > 0) {
+        cachedRules = rows;
+        lastRulesFetch = Date.now();
+        return cachedRules;
+      }
+      return VERIFIED_ADVISORY_RULES;
+    } finally {
+      rulesInFlight = null;
+    }
+  })();
+
+  return rulesInFlight;
 }
 
 export function computeGeometryBbox(
@@ -519,7 +563,11 @@ export const supabaseRepository: ForecastRepository = {
     );
     if (matchingDistBlocks.length > 0) {
       return matchingDistBlocks.map((b): Region => {
-        const { geometry } = resolveBlockGeometry(b);
+        const boundary_geom = cachedBlockBoundaries.get(b.block_id) ?? b.boundary_geom;
+        const effectiveBlock: BlockRow = boundary_geom !== undefined
+          ? { ...b, boundary_geom }
+          : b;
+        const { geometry } = resolveBlockGeometry(effectiveBlock);
         const centroid: [number, number] = [b.centroid_lon, b.centroid_lat];
         const bbox = computeGeometryBbox(geometry, centroid);
         return {
@@ -578,7 +626,11 @@ export const supabaseRepository: ForecastRepository = {
 
     // All blocks
     for (const b of blocks) {
-      const { geometry } = resolveBlockGeometry(b);
+      const boundary_geom = cachedBlockBoundaries.get(b.block_id) ?? b.boundary_geom;
+      const effectiveBlock: BlockRow = boundary_geom !== undefined
+        ? { ...b, boundary_geom }
+        : b;
+      const { geometry } = resolveBlockGeometry(effectiveBlock);
       const centroid: [number, number] = [b.centroid_lon, b.centroid_lat];
       allRegions.push({
         id: b.block_id,
@@ -762,16 +814,74 @@ export const supabaseRepository: ForecastRepository = {
       }
     }
 
+    // Load authentic PostGIS boundaries for target blocks on demand if not yet cached
+    const missingGeomBlocks = targetBlocks.filter(
+      (b) => !b.boundary_geom && !cachedBlockBoundaries.has(b.block_id)
+    );
+
+    if (missingGeomBlocks.length > 0) {
+      const firstS = missingGeomBlocks[0].state_name;
+      const firstD = missingGeomBlocks[0].district_name;
+      const sameDist = missingGeomBlocks.every(
+        (b) => b.district_name === firstD && b.state_name === firstS
+      );
+
+      try {
+        if (sameDist) {
+          const boundaryRows = await fetchPostgrest<{ block_id: string; boundary_geom: unknown }>(
+            `blocks?select=block_id,boundary_geom&state_name=eq.${encodeURIComponent(firstS)}&district_name=eq.${encodeURIComponent(firstD)}`
+          );
+          for (const r of boundaryRows) {
+            if (r.boundary_geom) {
+              cachedBlockBoundaries.set(r.block_id, r.boundary_geom);
+            }
+          }
+        } else {
+          const sameState = missingGeomBlocks.every((b) => b.state_name === firstS);
+          if (sameState && missingGeomBlocks.length <= 400) {
+            const boundaryRows = await fetchPostgrest<{ block_id: string; boundary_geom: unknown }>(
+              `blocks?select=block_id,boundary_geom&state_name=eq.${encodeURIComponent(firstS)}`
+            );
+            for (const r of boundaryRows) {
+              if (r.boundary_geom) {
+                cachedBlockBoundaries.set(r.block_id, r.boundary_geom);
+              }
+            }
+          } else {
+            // Batch by chunks of 50 IDs
+            for (let i = 0; i < missingGeomBlocks.length; i += 50) {
+              const chunk = missingGeomBlocks.slice(i, i + 50);
+              const idList = chunk.map((b) => b.block_id).join(',');
+              const boundaryRows = await fetchPostgrest<{ block_id: string; boundary_geom: unknown }>(
+                `blocks?select=block_id,boundary_geom&block_id=in.(${idList})`
+              );
+              for (const r of boundaryRows) {
+                if (r.boundary_geom) {
+                  cachedBlockBoundaries.set(r.block_id, r.boundary_geom);
+                }
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('[BHUMI Supabase Adapter] Failed to fetch boundaries for target blocks:', err);
+      }
+    }
+
     const features: RegionFeature[] = [];
 
     for (const block of targetBlocks) {
+      const boundary_geom = cachedBlockBoundaries.get(block.block_id) ?? block.boundary_geom;
+      const effectiveBlock: BlockRow = boundary_geom !== undefined
+        ? { ...block, boundary_geom }
+        : block;
       const bPreds = predMap.get(block.block_id);
       const w1 = bPreds?.get('week_1');
       const w2 = bPreds?.get('week_2');
       const w3 = bPreds?.get('week_3');
       const w4 = bPreds?.get('week_4');
 
-      const { geometry, representation, isCentroidFallback } = resolveBlockGeometry(block);
+      const { geometry, representation, isCentroidFallback } = resolveBlockGeometry(effectiveBlock);
 
       const props: RegionFeatureProperties = {
         id: block.block_id,

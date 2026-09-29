@@ -349,22 +349,38 @@ function MapViewInner(
     }
   }, [selectedRegionId, ready]);
 
+  // Handle container resize
+  useEffect(() => {
+    if (!ready || !mapRef.current || !containerRef.current) return;
+    mapRef.current.resize();
+    const ro = new ResizeObserver(() => {
+      mapRef.current?.resize();
+    });
+    ro.observe(containerRef.current);
+    return () => ro.disconnect();
+  }, [ready]);
+
   if (fallback && error) {
     return (
-      <div className="map-area flex items-center justify-center bg-[var(--surface-tile)]">
+      <div className="map-view-container flex items-center justify-center bg-[var(--surface-tile)]">
         <ErrorState message={error} />
       </div>
     );
   }
 
   return (
-    <div className="map-area" style={{ position: 'relative' }}>
-      {!ready && <MapSkeleton />}
+    <div className="map-view-container">
+      {!ready && (
+        <MapSkeleton className="absolute inset-0 z-10 flex items-center justify-center" />
+      )}
       <div
         ref={containerRef}
+        className="maplibre-container"
         style={{
           position: 'absolute',
           inset: 0,
+          width: '100%',
+          height: '100%',
           borderRadius: 'var(--radius-md)',
           overflow: 'hidden',
           opacity: ready ? 1 : 0,
@@ -384,7 +400,7 @@ export const MapView = dynamic(
     ),
   {
     ssr: false,
-    loading: () => <MapSkeleton />,
+    loading: () => <MapSkeleton className="map-view-container skeleton flex items-center justify-center" />,
   },
 );
 

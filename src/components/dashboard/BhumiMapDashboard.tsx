@@ -35,7 +35,7 @@ import type { GeoJSON } from 'geojson';
 
 const MapView = dynamic(
   () => import('@/components/map/MapView').then((m) => m.MapView),
-  { ssr: false, loading: () => <div className="map-area" style={{ background: 'var(--surface-tile)' }} /> },
+  { ssr: false, loading: () => <div className="map-view-container skeleton" style={{ background: 'var(--surface-tile)' }} /> },
 );
 
 const USE_MOCK = process.env.NEXT_PUBLIC_USE_MOCK_DATA === 'true';

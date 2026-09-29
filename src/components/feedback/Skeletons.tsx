@@ -14,10 +14,10 @@ export function CardSkeleton() {
   );
 }
 
-export function MapSkeleton() {
+export function MapSkeleton({ className }: { className?: string } = {}) {
   return (
     <div
-      className="map-area skeleton flex items-center justify-center"
+      className={className ?? 'map-area skeleton flex items-center justify-center'}
       style={{ background: 'var(--surface-tile)' }}
       aria-hidden="true"
       aria-label="Loading map"

@@ -75,4 +75,14 @@ pipeline/cache/
 !src/lib/
 !src/lib/**
 
+# Data pipeline & raw downloads
+/data/raw_lgd/
+/data/raw_terrain/
+*.parquet
+*.tif
+*.tiff
+*.dem
+
+
+
 
