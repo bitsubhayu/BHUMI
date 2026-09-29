@@ -78,6 +78,8 @@ pipeline/cache/
 # Data pipeline & raw downloads
 /data/raw_lgd/
 /data/raw_terrain/
+/data/backfill_checkpoint.json
+/data/backfill_skipped_blocks.log
 *.parquet
 *.tif
 *.tiff

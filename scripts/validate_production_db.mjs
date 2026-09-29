@@ -223,6 +223,27 @@ async function main() {
   console.log(`Pending blocks in seasonal archives: ${pendingInSeasonal.length}`);
   console.log(`Pending blocks in live weather buffer: ${pendingInLive.length}`);
 
+  // Exact Task 7 Coverage Calculations from Actual Database Counts
+  const distinctSeasonalBlockIds = new Set(seasonalRows.map(s => String(s.block_id)));
+  const seasonalYearsCovered = [...new Set(seasonalRows.map(s => s.season_year))].sort((a, b) => a - b);
+  const distinctLiveBlockIds = new Set(liveRows.map(l => String(l.block_id)));
+  const distinctTeleDates = new Set(tele.map(t => t.observation_date));
+
+  const seasonsPerBlock = {};
+  for (const s of seasonalRows) {
+    const bId = String(s.block_id);
+    seasonsPerBlock[bId] = (seasonsPerBlock[bId] || 0) + 1;
+  }
+  const fullyCoveredBlocks = Object.values(seasonsPerBlock).filter(count => count === 12).length;
+
+  console.log("\n--- PHASE C EXACT COVERAGE REPORT ---");
+  console.log(`historical_block_coverage: ${distinctSeasonalBlockIds.size}/${blocks.length} (${((distinctSeasonalBlockIds.size / blocks.length) * 100).toFixed(2)}%)`);
+  console.log(`historical_block_season_rows: ${seasonalRows.length}`);
+  console.log(`season_year coverage: [${seasonalYearsCovered.join(', ')}] (${seasonalYearsCovered.length} seasons)`);
+  console.log(`live_weather_block_coverage: ${distinctLiveBlockIds.size}/${blocks.length} (${((distinctLiveBlockIds.size / blocks.length) * 100).toFixed(2)}%)`);
+  console.log(`teleconnection_date_coverage: ${distinctTeleDates.size} dates (${tele.length} total rows)`);
+  console.log(`fully_covered_12_season_blocks: ${fullyCoveredBlocks}`);
+
   console.log("\n--- COMPLETE PRODUCTION VALIDATION SUMMARY ---");
   console.log(`Condition (total blocks == 7073): ${blocks.length === 7073 ? 'PASS' : 'FAIL'}`);
   console.log(`Condition (no duplicate blocks): ${duplicates.length === 0 ? 'PASS' : 'FAIL'}`);

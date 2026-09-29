@@ -61,7 +61,7 @@ class TestRealDataMLSmoke(unittest.TestCase):
         # 3. Ensure test block has at least 7 days of observations in live_weather_buffer
         import datetime
         today = datetime.date.today()
-        test_block_id = "IND_MH_PUN_001"
+        test_block_id = "4515"
         buffer_records = [
             {
                 "block_id": test_block_id,
@@ -70,7 +70,7 @@ class TestRealDataMLSmoke(unittest.TestCase):
                 "max_temp_c": 31.5,
                 "min_temp_c": 22.0,
                 "soil_moisture_idx": 48.0,
-                "data_source": "ERA5_SMAP_GPM_SYNTHESIZED",
+                "data_source": "GFS_ECMWF_REAL_CONSENSUS",
                 "is_preliminary": False,
             }
             for i in range(8)

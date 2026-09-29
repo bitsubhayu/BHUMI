@@ -214,6 +214,15 @@ python -m pipeline.jobs.daily_sync --dry-run --days 7
 
 # Run weekly historical sync in dry-run mode
 python -m pipeline.jobs.weekly_sync --dry-run --sample-only
+
+# Run dedicated nationwide historical backfill (resumable, checkpointed)
+python scripts/run_nationwide_historical_backfill.py --season-year 2024 --batch-size 10 --delay 10.0
+
+# Ingest rolling live weather buffer across nationwide production blocks
+python scripts/ingest_phase_c_live_weather_buffer.py --batch-size 50 --delay 1.0
+
+# Run independent production database validation
+node scripts/validate_production_db.mjs
 ```
 
 ---
@@ -241,11 +250,7 @@ BHUMI/
 │   └── README.md                    # Pipeline documentation
 ├── tests/                           # Pipeline & schema test suite (unittest)
 ├── src/
-│   ├── app/
-│   │   ├── favicon.ico
-│   │   ├── globals.css              # Tailwind CSS v4 & theme variables
-│   │   ├── layout.tsx               # Root layout & BHUMI metadata
-│   │   └── page.tsx                 # Application shell dashboard
+│   ├── app/                         # Next.js 16 App Router pages & API routes
 │   ├── components/                  # UI, Map, Advisory, and Dashboard components
 │   ├── config/                      # Site metadata & regional languages
 │   ├── lib/                         # Utilities, env validator, Supabase client
@@ -254,7 +259,11 @@ BHUMI/
 │   ├── migrations/                  # Sequential SQL migration files
 │   └── schema.sql                   # Consolidated PostgreSQL + PostGIS schema
 ├── scripts/
-│   └── verify_remote.mjs            # Remote Supabase verification script
+│   ├── run_nationwide_historical_backfill.py # Dedicated nationwide historical backfill
+│   ├── ingest_phase_c_live_weather_buffer.py # Nationwide rolling live weather buffer ingestion
+│   ├── validate_production_db.mjs   # Comprehensive production database validation
+│   ├── verify_remote.mjs            # Remote Supabase verification script
+│   └── verify_adapter.mjs           # Supabase adapter query verification script
 ├── .env.example                     # Variable names template
 ├── package.json                     # Project manifest & scripts
 └── README.md                        # Documentation

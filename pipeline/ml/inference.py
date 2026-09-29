@@ -148,7 +148,7 @@ class ProductionInferenceEngine:
         current_year = int(today.split("-")[0]) if "-" in today else datetime.date.today().year
 
         # 3. Teleconnection state & trajectory retrieval
-        telecon_history = self.loader.fetch_teleconnections_history(limit=60)
+        telecon_history = self.loader.fetch_teleconnections_history(limit=180)
         if not telecon_history:
             raise RuntimeError("Production inference aborted: teleconnections_history is empty in Supabase.")
 
@@ -156,7 +156,18 @@ class ProductionInferenceEngine:
         telecon_pred = self.telecon_ensemble.predict(telecon_history, exclude_year=current_year)
 
         analog_year = telecon_pred.get("analog_year")
-        latest_telecon = telecon_history[-1]
+        complete_telecons = [
+            t for t in telecon_history
+            if t.get("enso_oni") is not None and t.get("iod_dmi") is not None
+        ]
+        if complete_telecons:
+            latest_telecon = dict(complete_telecons[-1])
+            most_recent = telecon_history[-1]
+            if most_recent.get("mjo_phase") is not None:
+                latest_telecon["mjo_phase"] = most_recent["mjo_phase"]
+                latest_telecon["mjo_amplitude"] = most_recent["mjo_amplitude"]
+        else:
+            latest_telecon = telecon_history[-1]
 
         # 4. Fetch historical seasonal archives for climatology derivation (prior completed seasons)
         candidate_ids = [b["block_id"] for b in blocks]

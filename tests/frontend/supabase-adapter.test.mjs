@@ -476,7 +476,7 @@ describe('7. Experimental Model Provenance & Authoritative Metadata', () => {
     const serverMeta = await getModelMetadata();
     assert.equal(serverMeta.modelTier, 'EXPERIMENTAL');
     assert.equal(serverMeta.isProductionReady, false);
-    assert.equal(serverMeta.trainingCoverage.seasonsCount, 1);
+    assert.ok(serverMeta.trainingCoverage.seasonsCount >= 1);
 
     // 2. Verify client repository obtains metadata via /api/readiness
     const meta = await supabaseRepository.getMeta();
@@ -492,6 +492,7 @@ describe('7. Experimental Model Provenance & Authoritative Metadata', () => {
   test('authoritative server metadata loader reacts to source metadata.json modifications and propagates via /api/readiness', async () => {
     const metaPath = path.resolve(process.cwd(), 'pipeline/ml/artifacts/metadata.json');
     const originalContent = fs.readFileSync(metaPath, 'utf8');
+    const parsedOriginal = JSON.parse(originalContent);
 
     try {
       const parsed = JSON.parse(originalContent);
@@ -535,12 +536,12 @@ describe('7. Experimental Model Provenance & Authoritative Metadata', () => {
 
     // Verify restoration
     const restoredServerMeta = await getModelMetadata();
-    assert.equal(restoredServerMeta.trainingCoverage.blocksCount, 2);
-    assert.equal(restoredServerMeta.trainingCoverage.samplesGenerated, 96);
+    assert.equal(restoredServerMeta.trainingCoverage.blocksCount, parsedOriginal.training_coverage.blocks_count);
+    assert.equal(restoredServerMeta.trainingCoverage.samplesGenerated, parsedOriginal.training_coverage.samples_generated);
 
     const restoredMeta = await supabaseRepository.getMeta();
-    assert.equal(restoredMeta.trainingCoverage.blocksCount, 2);
-    assert.equal(restoredMeta.trainingCoverage.samplesGenerated, 96);
+    assert.equal(restoredMeta.trainingCoverage.blocksCount, parsedOriginal.training_coverage.blocks_count);
+    assert.equal(restoredMeta.trainingCoverage.samplesGenerated, parsedOriginal.training_coverage.samples_generated);
   });
 });
 

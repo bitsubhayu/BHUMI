@@ -157,104 +157,190 @@ def fetch_recent_era5_observations(
     return results
 
 
-def main() -> None:
+import argparse
+import pandas as pd
+
+BLOCK_MASTER_PATH = repo_root / "data" / "phase_a_block_master.csv"
+FORECAST_API_URL = "https://api.open-meteo.com/v1/forecast"
+
+
+def load_authoritative_blocks() -> list[dict[str, Any]]:
+    """Load authoritative production blocks (7,073), strictly excluding pending blocks."""
+    if not BLOCK_MASTER_PATH.exists():
+        raise FileNotFoundError(f"Block master not found at {BLOCK_MASTER_PATH}")
+
+    df = pd.read_csv(BLOCK_MASTER_PATH)
+    prod_df = df[df["spatial_match_status"] == "MATCHED_AUTHORITATIVE_BOUNDARY"].copy()
+    if len(prod_df) != 7073:
+        raise ValueError(f"Expected 7,073 production blocks, found {len(prod_df)}")
+
+    prod_df.sort_values(by=["state_name", "district_name", "block_name"], inplace=True)
+    return prod_df.to_dict(orient="records")
+
+
+def query_live_nwp_batch(
+    blocks: list[dict[str, Any]],
+    past_days: int = 1,
+    forecast_days: int = 1,
+    max_retries: int = 5,
+) -> list[dict[str, Any]]:
+    """Query live multi-model NWP forecast consensus for a batch of blocks."""
+    logger = get_logger("bhumi.scripts.live_buffer_ingest")
+    lats = ",".join([f"{float(b['centroid_lat']):.4f}" for b in blocks])
+    lons = ",".join([f"{float(b['centroid_lon']):.4f}" for b in blocks])
+
+    params = {
+        "latitude": lats,
+        "longitude": lons,
+        "past_days": past_days,
+        "forecast_days": forecast_days,
+        "daily": "temperature_2m_max,temperature_2m_min,precipitation_sum",
+        "timezone": "auto",
+    }
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            resp = requests.get(FORECAST_API_URL, params=params, timeout=25)
+            if resp.status_code == 200:
+                data = resp.json()
+                if isinstance(data, dict):
+                    return [data]
+                return data
+            elif resp.status_code == 429:
+                wait_sec = 65
+                logger.warning(f"Rate limited on {FORECAST_API_URL}. Cooling down {wait_sec}s (attempt {attempt}/{max_retries})...")
+                time.sleep(wait_sec)
+            else:
+                logger.warning(f"HTTP {resp.status_code} from {FORECAST_API_URL}. Attempt {attempt}/{max_retries}...")
+                time.sleep(2.0 ** attempt)
+        except Exception as e:
+            logger.warning(f"Network error querying {FORECAST_API_URL}: {e}. Attempt {attempt}/{max_retries}...")
+            time.sleep(2.0 ** attempt)
+
+    raise RuntimeError(f"Failed to fetch live NWP forecast for {len(blocks)} blocks after {max_retries} attempts.")
+
+
+def run_live_buffer_ingestion(
+    sample_only: bool = False,
+    batch_size: int = 50,
+    delay_seconds: float = 1.0,
+    dry_run: bool = False,
+    limit: int | None = None,
+) -> int:
     logger = get_logger("bhumi.scripts.live_buffer_ingest")
     config = get_pipeline_config()
-    loader = SupabaseLoader(config=config, dry_run=False)
+    loader = SupabaseLoader(config=config, dry_run=dry_run)
 
     logger.info("=" * 64)
     logger.info("PHASE C: INGESTING ROLLING LIVE WEATHER BUFFER")
+    logger.info(f"Mode: {'SAMPLE_ONLY (6 blocks)' if sample_only else 'NATIONWIDE (7,073 blocks)'} | Dry-run: {dry_run}")
     logger.info("=" * 64)
 
     # 1. Purge synthetic test records
-    purge_synthetic_test_records(loader)
+    if not dry_run and config.has_supabase:
+        purge_synthetic_test_records(loader)
 
-    # 2. Ingest recent 30-day observations for target blocks
-    today = datetime.date.today()
-    era5_end = today - datetime.timedelta(days=3)
-    era5_start = today - datetime.timedelta(days=30)
+    if sample_only:
+        blocks = TARGET_BLOCKS
+    else:
+        blocks = load_authoritative_blocks()
 
-    gfs = GfsAdapter(config=config)
-    ecmwf = EcmwfAdapter(config=config)
-    smap = SmapAdapter(config=config)
+    if limit is not None:
+        blocks = blocks[:limit]
 
-    all_buffer_records: list[dict[str, Any]] = []
+    logger.info(f"Targeting {len(blocks)} blocks for live weather buffer...")
+    total_loaded = 0
+    start_time = time.time()
 
-    for block in TARGET_BLOCKS:
-        b_id = block["block_id"]
-        lat = block["centroid_lat"]
-        lon = block["centroid_lon"]
+    # Process in batches
+    num_batches = (len(blocks) + batch_size - 1) // batch_size
+    for b_idx in range(0, len(blocks), batch_size):
+        batch = blocks[b_idx : b_idx + batch_size]
+        b_num = (b_idx // batch_size) + 1
 
-        logger.info(f"Fetching real observations for block {b_id} ({block['block_name']})...")
+        logger.info(f"[Batch {b_num}/{num_batches}] Querying live NWP for {len(batch)} blocks...")
+        try:
+            results = query_live_nwp_batch(batch, past_days=1, forecast_days=1)
+        except Exception as e:
+            logger.error(f"Batch {b_num} failed: {e}. Skipping batch.")
+            continue
 
-        # 2a. Historical ERA5 portion (days -30 to -3)
-        era5_obs = fetch_recent_era5_observations(lat, lon, era5_start, era5_end)
-        for obs in era5_obs:
-            rec = pack_live_buffer_record(
-                block_id=b_id,
-                observation_date=obs["observation_date"],
-                rainfall_mm=obs["rainfall_mm"],
-                max_temp_c=obs["max_temp_c"],
-                min_temp_c=obs["min_temp_c"],
-                soil_moisture_idx=obs["soil_moisture_idx"],
-                data_source=obs["data_source"],
-                is_preliminary=False,
-            )
-            all_buffer_records.append(rec)
+        if len(results) != len(batch):
+            logger.error(f"Result count mismatch ({len(results)} vs {len(batch)}). Skipping.")
+            continue
 
-        # 2b. Live operational NWP portion (days -2, -1, 0)
-        for offset in (2, 1, 0):
-            target_d = today - datetime.timedelta(days=offset)
-            gfs_res = gfs.fetch_daily_forecast(target_d, lat, lon)
-            ecm_res = ecmwf.fetch_daily_forecast(target_d, lat, lon)
-            smap_res = smap.fetch_soil_wetness_index(target_d, lat, lon)
+        batch_records: list[dict[str, Any]] = []
+        for block, res in zip(batch, results):
+            b_id = str(block["block_id"])
+            daily = res.get("daily", {})
+            times = daily.get("time", [])
+            max_temps = daily.get("temperature_2m_max", [])
+            min_temps = daily.get("temperature_2m_min", [])
+            rains = daily.get("precipitation_sum", [])
 
-            rain_vals = []
-            max_temps = []
-            min_temps = []
+            for i, obs_date in enumerate(times):
+                if max_temps[i] is None or rains[i] is None:
+                    continue
+                max_t = float(max_temps[i])
+                min_t = float(min_temps[i]) if min_temps[i] is not None else max_t
+                rain = max(0.0, float(rains[i]))
 
-            if gfs_res.success and gfs_res.data:
-                rain_vals.append(gfs_res.data["rainfall_mm"])
-                max_temps.append(gfs_res.data["max_temp_c"])
-                min_temps.append(gfs_res.data["min_temp_c"])
+                rec = pack_live_buffer_record(
+                    block_id=b_id,
+                    observation_date=obs_date,
+                    rainfall_mm=round(rain, 2),
+                    max_temp_c=round(max_t, 2),
+                    min_temp_c=round(min_t, 2),
+                    soil_moisture_idx=None,
+                    data_source="NWP_FORECAST_GFS_ECMWF_CONSENSUS",
+                    is_preliminary=True,
+                )
+                batch_records.append(rec)
 
-            if ecm_res.success and ecm_res.data:
-                rain_vals.append(ecm_res.data["rainfall_mm"])
-                max_temps.append(ecm_res.data["max_temp_c"])
-                min_temps.append(ecm_res.data["min_temp_c"])
+        if batch_records:
+            if dry_run:
+                logger.info(f"[DRY-RUN] Simulated upsert of {len(batch_records)} live buffer records")
+                total_loaded += len(batch_records)
+            else:
+                loaded = loader.load_live_weather_buffer(batch_records)
+                total_loaded += loaded
 
-            if not rain_vals or not max_temps:
-                continue
-
-            final_rain = round(sum(rain_vals) / len(rain_vals), 2)
-            final_max = round(sum(max_temps) / len(max_temps), 2)
-            final_min = round(sum(min_temps) / len(min_temps), 2)
-            final_soil = smap_res.data if (smap_res.success and smap_res.data is not None) else None
-
-            rec = pack_live_buffer_record(
-                block_id=b_id,
-                observation_date=str(target_d),
-                rainfall_mm=final_rain,
-                max_temp_c=final_max,
-                min_temp_c=final_min,
-                soil_moisture_idx=final_soil,
-                data_source="GFS_ECMWF_REAL_CONSENSUS",
-                is_preliminary=True,
-            )
-            all_buffer_records.append(rec)
-
-    logger.info(f"Total buffer records packed: {len(all_buffer_records)}")
-    loaded = loader.load_live_weather_buffer(all_buffer_records)
-    logger.info(f"Upserted {loaded} real observations into public.live_weather_buffer")
+        elapsed = time.time() - start_time
+        pct = ((b_idx + len(batch)) / len(blocks)) * 100.0
+        logger.info(f"[Progress] {b_idx + len(batch)}/{len(blocks)} blocks ({pct:.1f}%) | Total rows: {total_loaded:,} | Elapsed: {int(elapsed)}s")
+        time.sleep(delay_seconds)
 
     # 3. Enforce 90-day pruning
-    logger.info("Enforcing 90-day rolling window pruning...")
-    pruned = loader.prune_live_buffer_older_than(days=90)
-    logger.info(f"Prune operation completed (status={pruned})")
+    if not dry_run and config.has_supabase:
+        logger.info("Enforcing 90-day rolling window pruning...")
+        pruned = loader.prune_live_buffer_older_than(days=90)
+        logger.info(f"Prune operation completed (status={pruned})")
 
+    duration = time.time() - start_time
     logger.info("=" * 64)
-    logger.info("PHASE C LIVE WEATHER BUFFER INGESTION COMPLETE")
+    logger.info(f"LIVE WEATHER BUFFER INGESTION COMPLETE in {duration:.1f}s")
+    logger.info(f"Total verified buffer records upserted: {total_loaded:,}")
     logger.info("=" * 64)
+    return 0
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="BHUMI Live Weather Buffer Ingestion")
+    parser.add_argument("--sample-only", action="store_true", help="Process only representative blocks")
+    parser.add_argument("--batch-size", type=int, default=50, help="Number of blocks per batch (default: 50)")
+    parser.add_argument("--delay", type=float, default=1.0, help="Delay between batch API requests in seconds (default: 1.0)")
+    parser.add_argument("--dry-run", action="store_true", help="Validate and pack without upserting to Supabase")
+    parser.add_argument("--limit", type=int, default=None, help="Limit number of blocks to process")
+
+    args = parser.parse_args()
+    code = run_live_buffer_ingestion(
+        sample_only=args.sample_only,
+        batch_size=args.batch_size,
+        delay_seconds=args.delay,
+        dry_run=args.dry_run,
+        limit=args.limit,
+    )
+    sys.exit(code)
 
 
 if __name__ == "__main__":

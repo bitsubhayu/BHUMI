@@ -2,6 +2,15 @@
 
 Parses authoritative open climate index data from NOAA CPC and BOM Australia.
 Produces unified daily records matching public.teleconnections_history.
+
+Teleconnection Semantics & Temporal Alignment:
+- ENSO Oceanic Niño Index (ONI): Authoritative monthly 3-month running mean anomaly from NOAA CPC.
+- IOD Dipole Mode Index (DMI): Authoritative monthly sea surface temperature gradient index from NOAA PSL / BOM.
+- Temporal Alignment Rule: In public.teleconnections_history, each calendar date is assigned its month's
+  authoritative ONI and DMI values. They are strictly monthly indices aligned to daily rows and must NEVER
+  be interpreted or described as native daily measurements.
+- MJO Phase and Amplitude: Wheeler-Hendon RMM indices from BOM Australia are genuinely daily observations.
+- Source Provenance: Preserved as NOAA_CPC_BOM_AU.
 """
 
 from __future__ import annotations
