@@ -116,18 +116,134 @@ async function main() {
   const validACZ = sampleBlocks.filter(b => b.agro_climatic_zone && typeof b.agro_climatic_zone === 'string' && b.agro_climatic_zone.length > 0);
   console.log(`Blocks with valid agro_climatic_zone: ${validACZ.length}/${sampleBlocks.length}`);
 
-  console.log("\n--- VALIDATION SUMMARY ---");
-  console.log(`Total Valid Blocks in Supabase: ${blocks.length}`);
-  console.log(`Condition (total == 7073): ${blocks.length === 7073 ? 'PASS' : 'FAIL'}`);
-  console.log(`Condition (no duplicates): ${duplicates.length === 0 ? 'PASS' : 'FAIL'}`);
-  console.log(`Condition (no nulls): ${missingName.length === 0 && missingDistrict.length === 0 && missingState.length === 0 && missingLat.length === 0 && missingLon.length === 0 ? 'PASS' : 'FAIL'}`);
+  // 9. Phase C Meteorological Data Foundation Validations
+  console.log("\n--- PHASE C METEOROLOGICAL DATA VALIDATIONS ---");
+
+  // A. Teleconnections History Integrity
+  const tele = await fetchAll('teleconnections_history', 'observation_date,enso_oni,iod_dmi,mjo_phase,mjo_amplitude,source_agency');
+  console.log(`Total teleconnections_history records: ${tele.length}`);
+  const teleDateCounts = {};
+  for (const t of tele) {
+    teleDateCounts[t.observation_date] = (teleDateCounts[t.observation_date] || 0) + 1;
+  }
+  const duplicateTeleDates = Object.entries(teleDateCounts).filter(([, count]) => count > 1);
+  console.log(`Duplicate teleconnection observation dates: ${duplicateTeleDates.length}`);
+
+  const invalidTeleValues = tele.filter(t => {
+    if (t.enso_oni !== null && (t.enso_oni < -4.0 || t.enso_oni > 4.0)) return true;
+    if (t.iod_dmi !== null && (t.iod_dmi < -3.0 || t.iod_dmi > 3.0)) return true;
+    if (t.mjo_phase !== null && (t.mjo_phase < 1 || t.mjo_phase > 8)) return true;
+    if (t.mjo_amplitude !== null && (t.mjo_amplitude < 0.0 || t.mjo_amplitude > 10.0)) return true;
+    return false;
+  });
+  console.log(`Invalid teleconnection values out of range: ${invalidTeleValues.length}`);
+
+  // B. Seasonal Archives Validation
+  const seasonalRows = await fetchAll('seasonal_archives', 'id,block_id,season_year,rainfall_x10,max_temp_x10,soil_moisture_idx,weather_state_code');
+  console.log(`Total seasonal_archives records: ${seasonalRows.length}`);
+
+  const seasonalKeyCounts = {};
+  let arrayLengthViolations = 0;
+  let constantSeriesViolations = 0;
+  for (const s of seasonalRows) {
+    const key = `${s.block_id}_${s.season_year}`;
+    seasonalKeyCounts[key] = (seasonalKeyCounts[key] || 0) + 1;
+
+    if (
+      !Array.isArray(s.rainfall_x10) || s.rainfall_x10.length !== 214 ||
+      !Array.isArray(s.max_temp_x10) || s.max_temp_x10.length !== 214 ||
+      !Array.isArray(s.soil_moisture_idx) || s.soil_moisture_idx.length !== 214 ||
+      !Array.isArray(s.weather_state_code) || s.weather_state_code.length !== 214
+    ) {
+      arrayLengthViolations++;
+    }
+
+    // Meteorological realism check: Temperature in India across 214 days cannot be constant
+    const uniqueTemps = new Set(s.max_temp_x10);
+    if (uniqueTemps.size < 15) {
+      constantSeriesViolations++;
+    }
+  }
+  const duplicateSeasonalKeys = Object.entries(seasonalKeyCounts).filter(([, count]) => count > 1);
+  console.log(`Duplicate (block_id, season_year) pairs in archives: ${duplicateSeasonalKeys.length}`);
+  console.log(`Arrays with length != 214 elements: ${arrayLengthViolations}`);
+  console.log(`Suspicious constant unvarying temperature series: ${constantSeriesViolations}`);
+
+  // C. Live Weather Buffer & Retention Window
+  const liveRows = await fetchAll('live_weather_buffer', 'block_id,observation_date,rainfall_mm,max_temp_c,min_temp_c,soil_moisture_idx,data_source');
+  console.log(`Total live_weather_buffer records: ${liveRows.length}`);
+
+  const today = new Date();
+  let bufferAgeViolations = 0;
+  let invalidLiveBufferValues = 0;
+  for (const row of liveRows) {
+    const obsDate = new Date(row.observation_date);
+    const diffDays = Math.floor((today - obsDate) / (1000 * 60 * 60 * 24));
+    if (diffDays > 90) {
+      bufferAgeViolations++;
+    }
+    if (row.rainfall_mm < 0 || row.rainfall_mm > 2000) invalidLiveBufferValues++;
+    if (row.max_temp_c !== null && (row.max_temp_c < -50 || row.max_temp_c > 65)) invalidLiveBufferValues++;
+    if (row.min_temp_c !== null && (row.min_temp_c < -60 || row.min_temp_c > 50)) invalidLiveBufferValues++;
+    if (row.max_temp_c !== null && row.min_temp_c !== null && row.min_temp_c > row.max_temp_c) invalidLiveBufferValues++;
+    if (row.soil_moisture_idx !== null && (row.soil_moisture_idx < 0 || row.soil_moisture_idx > 100)) invalidLiveBufferValues++;
+  }
+  console.log(`Live buffer records older than 90 days: ${bufferAgeViolations}`);
+  console.log(`Physically impossible live buffer weather values: ${invalidLiveBufferValues}`);
+
+  // D. Orphan Check and 250 Pending Blocks Exclusion Check
+  const prodBlockIdSet = new Set(blocks.map(b => String(b.block_id)));
+
+  // Load pending blocks from phase A master if available
+  let pendingBlockIds = new Set();
+  try {
+    const masterCsv = fs.readFileSync('data/phase_a_block_master.csv', 'utf-8');
+    const lines = masterCsv.split('\n');
+    const header = lines[0].split(',');
+    const idIdx = header.indexOf('block_id');
+    const statusIdx = header.indexOf('spatial_match_status');
+    for (let i = 1; i < lines.length; i++) {
+      const parts = lines[i].split(',');
+      if (parts[statusIdx] === 'PENDING_OFFICIAL_BOUNDARY_MATCH') {
+        pendingBlockIds.add(String(parts[idIdx]));
+      }
+    }
+  } catch (err) {
+    console.warn("Could not read phase_a_block_master.csv to extract pending IDs:", err.message);
+  }
+  console.log(`Authoritative pending blocks identified: ${pendingBlockIds.size}`);
+
+  const orphanSeasonalBlocks = seasonalRows.filter(s => !prodBlockIdSet.has(String(s.block_id)));
+  const orphanLiveBlocks = liveRows.filter(l => !prodBlockIdSet.has(String(l.block_id)));
+  console.log(`Orphan block IDs in seasonal archives: ${orphanSeasonalBlocks.length}`);
+  console.log(`Orphan block IDs in live weather buffer: ${orphanLiveBlocks.length}`);
+
+  const pendingInSeasonal = seasonalRows.filter(s => pendingBlockIds.has(String(s.block_id)));
+  const pendingInLive = liveRows.filter(l => pendingBlockIds.has(String(l.block_id)));
+  console.log(`Pending blocks in seasonal archives: ${pendingInSeasonal.length}`);
+  console.log(`Pending blocks in live weather buffer: ${pendingInLive.length}`);
+
+  console.log("\n--- COMPLETE PRODUCTION VALIDATION SUMMARY ---");
+  console.log(`Condition (total blocks == 7073): ${blocks.length === 7073 ? 'PASS' : 'FAIL'}`);
+  console.log(`Condition (no duplicate blocks): ${duplicates.length === 0 ? 'PASS' : 'FAIL'}`);
+  console.log(`Condition (no null block fields): ${missingName.length === 0 && missingDistrict.length === 0 && missingState.length === 0 && missingLat.length === 0 && missingLon.length === 0 ? 'PASS' : 'FAIL'}`);
   console.log(`Condition (valid bounds): ${outOfBounds.length === 0 ? 'PASS' : 'FAIL'}`);
-  console.log(`Condition (legacy IDs purged): ${legacyFound.length === 0 ? 'PASS' : 'FAIL'}`);
+  console.log(`Condition (legacy IND_* purged from all tables): ${legacyFound.length === 0 && legacyPreds.length === 0 && legacyBuffer.length === 0 && legacyArchives.length === 0 ? 'PASS' : 'FAIL'}`);
   console.log(`Condition (all 7073 MultiPolygon boundaries): ${validBoundaries.length === 7073 ? 'PASS' : 'FAIL'}`);
   console.log(`Condition (all 7073 elevation_m valid): ${validElevations.length === 7073 ? 'PASS' : 'FAIL'}`);
   console.log(`Condition (all 7073 slope_deg valid): ${validSlopes.length === 7073 ? 'PASS' : 'FAIL'}`);
   console.log(`Condition (all 7073 distance_to_coast_km valid): ${validCoastDists.length === 7073 ? 'PASS' : 'FAIL'}`);
   console.log(`Condition (all 7073 agro_climatic_zone valid): ${validACZ.length === 7073 ? 'PASS' : 'FAIL'}`);
+  console.log(`Condition (teleconnections unique dates): ${duplicateTeleDates.length === 0 ? 'PASS' : 'FAIL'}`);
+  console.log(`Condition (teleconnections value ranges valid): ${invalidTeleValues.length === 0 ? 'PASS' : 'FAIL'}`);
+  console.log(`Condition (seasonal archives unique per block/year): ${duplicateSeasonalKeys.length === 0 ? 'PASS' : 'FAIL'}`);
+  console.log(`Condition (seasonal arrays exactly 214 elements): ${arrayLengthViolations === 0 ? 'PASS' : 'FAIL'}`);
+  console.log(`Condition (seasonal series meteorological variance): ${constantSeriesViolations === 0 ? 'PASS' : 'FAIL'}`);
+  console.log(`Condition (live buffer <= 90 days retention): ${bufferAgeViolations === 0 ? 'PASS' : 'FAIL'}`);
+  console.log(`Condition (live buffer weather values physically valid): ${invalidLiveBufferValues === 0 ? 'PASS' : 'FAIL'}`);
+  console.log(`Condition (zero orphan weather blocks): ${orphanSeasonalBlocks.length === 0 && orphanLiveBlocks.length === 0 ? 'PASS' : 'FAIL'}`);
+  console.log(`Condition (zero pending blocks in weather data): ${pendingInSeasonal.length === 0 && pendingInLive.length === 0 ? 'PASS' : 'FAIL'}`);
 }
 
 main().catch(console.error);
+

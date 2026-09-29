@@ -77,5 +77,32 @@ def pack_seasonal_archive(
         "soil_moisture_idx": soil_moisture_idx,
         "weather_state_code": weather_state_codes,
     }
-
     return validate_seasonal_archive(raw_record)
+
+
+def unpack_seasonal_archive(record: dict[str, Any]) -> dict[str, Any]:
+    """Unpack a packed seasonal_archives row back into floating-point daily series.
+
+    Returns:
+      Dictionary with:
+        - dates: list of 214 datetime.date objects
+        - rainfall_mm: list of 214 float values (scaled by 0.1)
+        - max_temp_c: list of 214 float values (scaled by 0.1)
+        - soil_moisture_idx: list of 214 float values
+        - weather_state_code: list of 214 int values
+    """
+    season_year = int(record["season_year"])
+    dates = get_season_dates(season_year)
+
+    rainfall_mm = [round(val / 10.0, 1) for val in record["rainfall_x10"]]
+    max_temp_c = [round(val / 10.0, 1) for val in record["max_temp_x10"]]
+    soil_moisture_idx = [float(val) for val in record["soil_moisture_idx"]]
+    weather_state_code = [int(val) for val in record["weather_state_code"]]
+
+    return {
+        "dates": dates,
+        "rainfall_mm": rainfall_mm,
+        "max_temp_c": max_temp_c,
+        "soil_moisture_idx": soil_moisture_idx,
+        "weather_state_code": weather_state_code,
+    }

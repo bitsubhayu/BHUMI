@@ -33,26 +33,31 @@ from pipeline.transforms.seasonal_pack import pack_seasonal_archive
 from pipeline.utils.config import get_pipeline_config
 from pipeline.utils.logger import get_logger
 
+# Representative sample blocks across diverse Indian agro-climatic zones (authoritative LGD codes)
 REPRESENTATIVE_BLOCKS = [
     {
-        "block_id": "IND_MH_PUN_001",
-        "block_name": "Haveli (Pune)",
+        "block_id": "4515",
+        "block_name": "Haveli",
         "district_name": "Pune",
         "state_name": "Maharashtra",
-        "centroid_lat": 18.5204,
-        "centroid_lon": 73.8567,
-        "elevation_m": 560.0,
-        "slope_deg": 2.1,
+        "centroid_lat": 18.651269,
+        "centroid_lon": 73.831345,
+        "elevation_m": 590.1,
+        "slope_deg": 1.41,
+        "distance_to_coast_km": 87.71,
+        "agro_climatic_zone": "Western Plateau and Hills Region",
     },
     {
-        "block_id": "IND_RJ_JOD_001",
-        "block_name": "Mandore (Jodhpur)",
+        "block_id": "726",
+        "block_name": "Mandor",
         "district_name": "Jodhpur",
         "state_name": "Rajasthan",
-        "centroid_lat": 26.2389,
-        "centroid_lon": 73.0243,
-        "elevation_m": 231.0,
-        "slope_deg": 1.2,
+        "centroid_lat": 26.327539,
+        "centroid_lon": 73.171440,
+        "elevation_m": 223.2,
+        "slope_deg": 0.49,
+        "distance_to_coast_km": 447.34,
+        "agro_climatic_zone": "Western Dry Region",
     },
 ]
 

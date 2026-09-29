@@ -1,0 +1,2 @@
+# Enforce LF endings on LightGBM model text files because LightGBM calculates exact byte offsets
+pipeline/ml/artifacts/*.txt text eol=lf

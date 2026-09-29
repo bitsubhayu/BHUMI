@@ -15,6 +15,82 @@ from pipeline.sources.base import AdapterResult, BaseSourceAdapter
 from pipeline.utils.validation import validate_teleconnection_record
 
 
+def parse_mjo_text(text: str) -> dict[datetime.date, tuple[int, float]]:
+    """Parse Wheeler-Hendon RMM MJO text from BOM Australia."""
+    mjo_map: dict[datetime.date, tuple[int, float]] = {}
+    for line in text.splitlines():
+        parts = line.strip().split()
+        if len(parts) >= 7 and parts[0].isdigit():
+            try:
+                yr = int(parts[0])
+                mo = int(parts[1])
+                day = int(parts[2])
+                rmm1 = float(parts[3])
+                rmm2 = float(parts[4])
+                phase = int(parts[5])
+                amp = float(parts[6])
+
+                # BOM uses 999.0 for missing/unfinalized values
+                if phase in range(1, 9) and 0.0 <= amp < 99.0:
+                    obs_date = datetime.date(yr, mo, day)
+                    mjo_map[obs_date] = (phase, amp)
+            except (ValueError, IndexError):
+                continue
+    return mjo_map
+
+
+def parse_oni_text(text: str) -> dict[tuple[int, int], float]:
+    """Parse NOAA CPC Oceanic Niño Index text (supports primary and fallback formats)."""
+    oni_map: dict[tuple[int, int], float] = {}
+    month_map = {
+        "DJF": 1, "JFM": 2, "FMA": 3, "MAM": 4,
+        "AMJ": 5, "MJJ": 6, "JJA": 7, "JAS": 8,
+        "ASO": 9, "SON": 10, "OND": 11, "NDJ": 12,
+    }
+    for line in text.splitlines():
+        parts = line.strip().split()
+        if not parts:
+            continue
+        # Primary NOAA CPC format: SEAS YR TOTAL ANOM
+        if len(parts) >= 4 and parts[0] in month_map and parts[1].isdigit():
+            season = parts[0]
+            year = int(parts[1])
+            try:
+                anom = float(parts[3])
+                mo = month_map[season]
+                oni_map[(year, mo)] = anom
+            except ValueError:
+                continue
+        # Fallback table format: YEAR followed by 12 monthly values
+        elif len(parts) == 13 and parts[0].isdigit():
+            year = int(parts[0])
+            for mo in range(1, 13):
+                try:
+                    val = float(parts[mo])
+                    if -99.0 < val < 99.0:
+                        oni_map[(year, mo)] = val
+                except ValueError:
+                    continue
+    return oni_map
+
+
+def parse_dmi_text(text: str) -> dict[tuple[int, int], float]:
+    """Parse Indian Ocean Dipole Mode Index (DMI) text."""
+    dmi_map: dict[tuple[int, int], float] = {}
+    for line in text.splitlines():
+        parts = line.strip().split()
+        if len(parts) == 13 and parts[0].isdigit():
+            year = int(parts[0])
+            for mo in range(1, 13):
+                try:
+                    val = float(parts[mo])
+                    if -99.0 < val < 99.0:
+                        dmi_map[(year, mo)] = val
+                except ValueError:
+                    continue
+    return dmi_map
+
+
 class TeleconnectionsAdapter(BaseSourceAdapter):
     """Adapter for global teleconnection indices (ENSO, IOD, MJO)."""
 
@@ -39,65 +115,20 @@ class TeleconnectionsAdapter(BaseSourceAdapter):
         """Fetch Wheeler-Hendon RMM MJO phase and amplitude from BOM Australia."""
         self.logger.info("Fetching MJO index from BOM Australia...")
         resp = self.request_with_retry("GET", self.BOM_RMM_URL)
-        mjo_map: dict[datetime.date, tuple[int, float]] = {}
-
-        for line in resp.text.splitlines():
-            parts = line.strip().split()
-            if len(parts) >= 7 and parts[0].isdigit():
-                try:
-                    yr = int(parts[0])
-                    mo = int(parts[1])
-                    day = int(parts[2])
-                    phase = int(parts[5])
-                    amp = float(parts[6])
-
-                    # BOM uses 999.0 for missing/unfinalized values
-                    if phase in range(1, 9) and 0.0 <= amp < 99.0:
-                        obs_date = datetime.date(yr, mo, day)
-                        mjo_map[obs_date] = (phase, amp)
-                except (ValueError, IndexError):
-                    continue
-
+        mjo_map = parse_mjo_text(resp.text)
         self.logger.info(f"Parsed {len(mjo_map)} daily MJO records")
         return mjo_map
 
     def fetch_oni_monthly(self) -> dict[tuple[int, int], float]:
         """Fetch NOAA CPC Oceanic Niño Index (3-month running mean anomaly)."""
         self.logger.info("Fetching ENSO ONI index from NOAA CPC...")
-        oni_map: dict[tuple[int, int], float] = {}
-        month_map = {
-            "DJF": 1, "JFM": 2, "FMA": 3, "MAM": 4,
-            "AMJ": 5, "MJJ": 6, "JJA": 7, "JAS": 8,
-            "ASO": 9, "SON": 10, "OND": 11, "NDJ": 12,
-        }
-
         try:
             resp = self.request_with_retry("GET", self.NOAA_ONI_URL)
-            for line in resp.text.splitlines():
-                parts = line.strip().split()
-                if len(parts) >= 4 and parts[0] in month_map and parts[1].isdigit():
-                    season = parts[0]
-                    year = int(parts[1])
-                    try:
-                        anom = float(parts[3])
-                        mo = month_map[season]
-                        oni_map[(year, mo)] = anom
-                    except ValueError:
-                        continue
+            oni_map = parse_oni_text(resp.text)
         except Exception as e:
             self.logger.warning(f"NOAA CPC ONI primary failed ({e}), trying fallback mirror...")
             resp = self.request_with_retry("GET", self.NOAA_ONI_FALLBACK_URL)
-            for line in resp.text.splitlines():
-                parts = line.strip().split()
-                if len(parts) == 13 and parts[0].isdigit():
-                    year = int(parts[0])
-                    for mo in range(1, 13):
-                        try:
-                            val = float(parts[mo])
-                            if -99.0 < val < 99.0:
-                                oni_map[(year, mo)] = val
-                        except ValueError:
-                            continue
+            oni_map = parse_oni_text(resp.text)
 
         self.logger.info(f"Parsed {len(oni_map)} monthly ENSO ONI values")
         return oni_map
@@ -109,17 +140,7 @@ class TeleconnectionsAdapter(BaseSourceAdapter):
 
         try:
             resp = self.request_with_retry("GET", self.BOM_DMI_URL)
-            for line in resp.text.splitlines():
-                parts = line.strip().split()
-                if len(parts) == 13 and parts[0].isdigit():
-                    year = int(parts[0])
-                    for mo in range(1, 13):
-                        try:
-                            val = float(parts[mo])
-                            if -99.0 < val < 99.0:
-                                dmi_map[(year, mo)] = val
-                        except ValueError:
-                            continue
+            dmi_map = parse_dmi_text(resp.text)
         except Exception as e:
             self.logger.warning(f"BOM/NOAA DMI fetch failed ({e})")
 

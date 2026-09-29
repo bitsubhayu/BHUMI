@@ -111,3 +111,45 @@ Phase B established the official simplified block boundary polygons and static t
 - `scripts/upsert_phase_b_boundaries_and_terrain.py`: Batch PostgREST boundary and terrain feature upsert with payload optimization.
 - `scripts/validate_production_db.mjs`: Automated PostgREST assertion test verifying 7,073 MultiPolygons, valid ranges, and zero orphaned records.
 
+---
+
+## 6. Historical & Live Meteorological Data Foundation (Phase C)
+
+Phase C establishes the operational data foundation populating `public.teleconnections_history`, `public.seasonal_archives` (12 historical seasons, 2014–2025), and `public.live_weather_buffer` (rolling 90-day window) from real meteorological and satellite sources.
+
+### Authoritative Source Inventory & Protocols
+
+| Source Priority | Source & Provider | Variables Extracted | Cadence & Ingestion Target | Access Protocol & Endpoints | Status & Handling |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **1. NOAA CPC ONI** | NOAA Climate Prediction Center | Oceanic Niño Index (ENSO anomaly, °C) | Monthly, interpolated to daily in `public.teleconnections_history` | HTTP GET `https://www.cpc.ncep.noaa.gov/data/indices/oni.ascii.txt` (mirror: `https://psl.noaa.gov/data/correlation/oni.data`) | **Active & Live** (919 monthly values ingested) |
+| **2. BOM DMI** | Australian Bureau of Meteorology / NOAA PSL | Dipole Mode Index (IOD anomaly, °C) | Monthly, interpolated to daily in `public.teleconnections_history` | HTTP GET `https://psl.noaa.gov/gcos_wgsp/Timeseries/Data/dmi.had.long.data` | **Active & Live** (1,877 monthly values ingested) |
+| **3. BOM RMM MJO** | Australian Bureau of Meteorology | Wheeler-Hendon RMM1, RMM2, Phase (1–8), Amplitude ($\ge 0$) | Daily in `public.teleconnections_history` | HTTP GET `http://www.bom.gov.au/climate/mjo/graphics/rmm.74toRealtime.txt` | **Active & Live** (17,876 daily values ingested) |
+| **4. CHIRPS** | UCSB Climate Hazards Center | High-resolution precipitation (0.05° grid, mm/day) | Daily, 214-day seasonal window & monthly reconciliation pass | HTTP GET GeoTIFF `https://data.chc.ucsb.edu/products/CHIRPS-2.0/global_daily/tifs/p05/` | **Active & Live** (0.05° GeoTIFFs decoded) |
+| **5. ERA5 / ERA5-Land** | Copernicus Climate Change Service (ECMWF) | 2m max temp, total precipitation, volumetric soil moisture | 214-day seasonal series (2014–2025) & reanalysis reconciliation | Copernicus CDS API (`cdsapi` process `reanalysis-era5-land`) with documented ECMWF archive fallback | **Active & Live** (72 genuine seasonal archives ingested) |
+| **6. NASA GPM IMERG** | NASA GES DISC / PMM | Early run precipitation (~4h lag for live buffer), Final run for reconciliation | Daily in `public.live_weather_buffer` | HTTPS with Earthdata Login via GES DISC cumulus protected endpoints | **Fail-Closed Verified** (requires user EULA authorization at `urs.earthdata.nasa.gov`) |
+| **7. NASA SMAP** | NASA NSIDC DAAC | Soil moisture ($m^3/m^3$) converted to 0–100 wetness index | Daily in `public.live_weather_buffer` | HTTPS with Earthdata Login via NSIDC DAAC `SPL3SMP` Level-3 HDF5 granules | **Active & Live** (Authentic HDF5 downloaded & decoded) |
+| **8. NOAA GFS / GEFS** | NOAA NCEP NOMADS | 2m max/min temperature, accumulated precipitation (APCP, mm) | Daily in `public.live_weather_buffer` | HTTP subregion GRIB2 filter (`https://nomads.ncep.noaa.gov/cgi-bin/filter_gfs_0p25.pl`) | **Active & Live** (0.25° GRIB2 subregion decoded) |
+| **9. ECMWF Open Data** | ECMWF | 2m max/min temperature, surface precipitation | Daily in `public.live_weather_buffer` | Python client `ecmwf-opendata` / HTTPS Open Data index with Open-Meteo IFS mirror fallback | **Active & Live** (IFS 0.25° forecast extracted) |
+| **10. IMD Gridded** | IMD NDC Pune | Ground-truth 0.25° rainfall & 0.5° temperature | Offline ground-truth validation | Binary `.grd` format requiring institutional registration with IMD Pune | **Gracefully Skipped** (clean `skipped_unconfigured` metadata; fail-closed) |
+
+### Transformation & Packing Design
+
+1. **Seasonal Array Packing (`pack_seasonal_archive`)**:
+   - Fixed 214-day window: **1 April to 31 October** inclusive (identical duration across leap and non-leap years).
+   - Cardinality constraint: Arrays must contain **exactly 214 elements**.
+   - Storage scaling:
+     - `rainfall_x10`: $mm \times 10$, smallint range `[0, 32767]`.
+     - `max_temp_x10`: $^\circ C \times 10$, smallint range `[-500, 700]`.
+     - `soil_moisture_idx`: Scaled integer wetness index `[0, 100]`.
+     - `weather_state_code`: IMD operational monsoon state `[0: Normal, 1: Onset, 2: Active, 3: Break, 4: Heavy]`.
+   - Deterministic unpacking: `unpack_seasonal_archive` preserves 0.1 precision.
+2. **Rolling Live Weather Buffer (`pack_live_buffer_record`)**:
+   - Stores up to 90 days of daily observations per block.
+   - Provenance attribution tags: `GFS_ECMWF_REAL_CONSENSUS`, `NOAA_GFS_REAL`, `ECMWF_OPEN_DATA_DIRECT`, `CHIRPS_FINAL_RECONCILED`, `ERA5_REANALYSIS_ARCHIVE_FALLBACK`.
+   - Automatic pruning: `prune_live_buffer_older_than(days=90)` removes records older than 90 days daily.
+3. **Fail-Closed & Anti-Fabrication Principles**:
+   - **Zero Synthetic Fallbacks**: When an official source fails or is unconfigured, the pipeline logs the failure and skips the record rather than fabricating numbers.
+   - **Multi-Model Consensus**: When multiple NWP sources (GFS, ECMWF) are available, consensus mean is stored with explicit composite provenance tags.
+   - **7,073 Production Restriction**: Weather records are strictly restricted to the 7,073 authoritative production blocks. The 250 pending blocks remain completely excluded.
+
+

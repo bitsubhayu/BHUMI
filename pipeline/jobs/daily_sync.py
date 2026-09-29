@@ -30,43 +30,43 @@ from pipeline.transforms.buffer_pack import pack_live_buffer_record
 from pipeline.utils.config import get_pipeline_config
 from pipeline.utils.logger import get_logger
 
-# Representative sample blocks across diverse Indian agro-climatic zones (for intentional test/sample mode only)
+# Representative sample blocks across diverse Indian agro-climatic zones (authoritative LGD codes)
 REPRESENTATIVE_BLOCKS = [
     {
-        "block_id": "IND_MH_PUN_001",
+        "block_id": "4515",
         "block_name": "Haveli",
         "district_name": "Pune",
         "state_name": "Maharashtra",
-        "centroid_lat": 18.5204,
-        "centroid_lon": 73.8567,
-        "elevation_m": 560.0,
-        "slope_deg": 2.1,
-        "distance_to_coast_km": 120.0,
-        "agro_climatic_zone": "Western Plateau and Hills",
+        "centroid_lat": 18.651269,
+        "centroid_lon": 73.831345,
+        "elevation_m": 590.1,
+        "slope_deg": 1.41,
+        "distance_to_coast_km": 87.71,
+        "agro_climatic_zone": "Western Plateau and Hills Region",
     },
     {
-        "block_id": "IND_RJ_JOD_002",
-        "block_name": "Mandore",
+        "block_id": "726",
+        "block_name": "Mandor",
         "district_name": "Jodhpur",
         "state_name": "Rajasthan",
-        "centroid_lat": 26.2389,
-        "centroid_lon": 73.0243,
-        "elevation_m": 231.0,
-        "slope_deg": 1.2,
-        "distance_to_coast_km": 450.0,
+        "centroid_lat": 26.327539,
+        "centroid_lon": 73.171440,
+        "elevation_m": 223.2,
+        "slope_deg": 0.49,
+        "distance_to_coast_km": 447.34,
         "agro_climatic_zone": "Western Dry Region",
     },
     {
-        "block_id": "IND_WB_KOL_003",
-        "block_name": "Barasat",
+        "block_id": "2726",
+        "block_name": "Barasat-I",
         "district_name": "North 24 Parganas",
         "state_name": "West Bengal",
-        "centroid_lat": 22.7231,
-        "centroid_lon": 88.4812,
-        "elevation_m": 11.0,
-        "slope_deg": 0.5,
-        "distance_to_coast_km": 80.0,
-        "agro_climatic_zone": "Lower Gangetic Plain",
+        "centroid_lat": 22.741231,
+        "centroid_lon": 88.517608,
+        "elevation_m": 10.2,
+        "slope_deg": 0.87,
+        "distance_to_coast_km": 61.40,
+        "agro_climatic_zone": "Lower Gangetic Plain Region",
     },
 ]
 
@@ -101,6 +101,7 @@ def run_daily_sync(
     days: int = 7,
     sample_only: bool = False,
     allow_experimental: bool = False,
+    run_inference: bool = False,
 ) -> int:
     """Execute daily live synchronization job."""
     config = get_pipeline_config()
@@ -239,26 +240,32 @@ def run_daily_sync(
     logger.info("DATA SYNC SUCCESS: Teleconnections and live weather buffer successfully updated and pruned.")
 
     # 4. Step 4: ML Forecasting & Prediction Inference Sync
-    logger.info("Step 4: Executing BHUMI prediction inference sync via predict_sync entry point...")
-    try:
-        from pipeline.jobs.predict_sync import run_predict_sync
-        target_block_ids = [b["block_id"] for b in blocks]
-        inf_result = run_predict_sync(
-            as_of_date=str(today),
-            dry_run=dry_run,
-            block_ids=target_block_ids,
-            allow_experimental=allow_experimental,
+    if not run_inference:
+        logger.info(
+            "Step 4: ML forecasting inference skipped for Phase C "
+            "(meteorological data-ingestion foundation only; ML inference is scheduled for Phase D)."
         )
-        if not inf_result.get("success", False) and inf_result.get("status") != "BLOCKED_BY_READINESS_GATE":
-            logger.error(f"PIPELINE FAILURE: Prediction sync did not complete successfully: {inf_result.get('error')}")
+    else:
+        logger.info("Step 4: Executing BHUMI prediction inference sync via predict_sync entry point...")
+        try:
+            from pipeline.jobs.predict_sync import run_predict_sync
+            target_block_ids = [b["block_id"] for b in blocks]
+            inf_result = run_predict_sync(
+                as_of_date=str(today),
+                dry_run=dry_run,
+                block_ids=target_block_ids,
+                allow_experimental=allow_experimental,
+            )
+            if not inf_result.get("success", False) and inf_result.get("status") != "BLOCKED_BY_READINESS_GATE":
+                logger.error(f"PIPELINE FAILURE: Prediction sync did not complete successfully: {inf_result.get('error')}")
+                return 1
+        except Exception as e:
+            logger.error(f"PIPELINE FAILURE: Inference execution failed: {e}", exc_info=True)
             return 1
-    except Exception as e:
-        logger.error(f"PIPELINE FAILURE: Inference execution failed: {e}", exc_info=True)
-        return 1
 
     duration = time.time() - start_time
     logger.info("=" * 64)
-    logger.info(f"Daily Live Synchronization & Forecasting Finished in {duration:.2f}s")
+    logger.info(f"Daily Live Synchronization Finished in {duration:.2f}s")
     logger.info("=" * 64)
     return 0
 
@@ -269,6 +276,7 @@ def main() -> None:
     parser.add_argument("--days", type=int, default=7, help="Number of recent days to synchronize (default: 7)")
     parser.add_argument("--sample-only", action="store_true", help="Run on a minimal representative sample dataset")
     parser.add_argument("--allow-experimental", action="store_true", help="Allow running with experimental/unready model")
+    parser.add_argument("--run-inference", action="store_true", help="Execute ML forecasting inference step (Phase D)")
 
     args = parser.parse_args()
     code = run_daily_sync(
@@ -276,6 +284,7 @@ def main() -> None:
         days=args.days,
         sample_only=args.sample_only,
         allow_experimental=args.allow_experimental,
+        run_inference=args.run_inference,
     )
     sys.exit(code)
 
