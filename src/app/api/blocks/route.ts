@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server';
 import { getBlocks, getLivePredictions, buildBlockGeoJSON } from '@/lib/data';
 
-export const revalidate = 60; // Cache for 60 seconds
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
 
 export async function GET() {
   try {

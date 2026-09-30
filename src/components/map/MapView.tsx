@@ -35,7 +35,7 @@ interface MapViewProps {
 }
 
 const POSITRON_URL = 'https://tiles.openfreemap.org/styles/positron';
-const LOAD_TIMEOUT_MS = 5000;
+const LOAD_TIMEOUT_MS = 12000;
 
 // Risk color step expression for MapLibre
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
