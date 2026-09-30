@@ -47,6 +47,17 @@ export const ALL_STEP6_LOCALES: Locale[] = [
   'or',
 ];
 
+// Canonical mapping from legacy test identifiers to authentic LGD codes in Supabase
+export const LEGACY_BLOCK_ID_MAP: Record<string, string> = {
+  'IND_MH_PUN_001': '4515', // Haveli, Pune
+  'IND_RJ_JOD_001': '726',  // Mandor, Jodhpur
+  'IND_WB_KOL_003': '2726', // Barasat-I, North 24 Parganas
+};
+
+export function resolveBlockId(id: string): string {
+  return LEGACY_BLOCK_ID_MAP[id] || id;
+}
+
 // In-memory cache with independent timestamps per dataset and in-flight promise deduplication
 let cachedBlocks: BlockRow[] | null = null;
 let cachedPredictions: LivePredictionRow[] | null = null;
@@ -643,12 +654,13 @@ export const supabaseRepository: ForecastRepository = {
     }
 
     // Matching score: exact id match (3) > exact name match (2) > includes (1)
+    const resolvedQ = resolveBlockId(q).toLowerCase();
     const matches: { region: Region; score: number }[] = [];
     for (const r of allRegions) {
       const idLower = r.id.toLowerCase();
       const nameLower = r.name.toLowerCase();
 
-      if (idLower === q) {
+      if (idLower === q || idLower === resolvedQ) {
         matches.push({ region: r, score: 3 });
       } else if (nameLower === q) {
         matches.push({ region: r, score: 2 });
@@ -805,7 +817,8 @@ export const supabaseRepository: ForecastRepository = {
       if (stateFiltered.length > 0) {
         targetBlocks = stateFiltered;
       } else {
-        const blockMatch = blocks.filter((b) => b.block_id === parentId);
+        const resolvedParentId = resolveBlockId(parentId);
+        const blockMatch = blocks.filter((b) => b.block_id === parentId || b.block_id === resolvedParentId);
         if (blockMatch.length > 0) {
           const bMatch = blockMatch[0];
           targetBlocks = blocks.filter(
@@ -937,7 +950,8 @@ export const supabaseRepository: ForecastRepository = {
 
   async getRisk(regionId: string): Promise<RegionRisk> {
     const predictions = await getCachedPredictions();
-    const blockPreds = predictions.filter((p) => p.block_id === regionId);
+    const resolvedId = resolveBlockId(regionId);
+    const blockPreds = predictions.filter((p) => p.block_id === regionId || p.block_id === resolvedId);
 
     // Missing prediction state: safe no-data fallback
     if (blockPreds.length === 0) {
@@ -1007,7 +1021,8 @@ export const supabaseRepository: ForecastRepository = {
     const authorMeta = await fetchAuthoritativeMetadata();
 
     const targetBucket: LeadTimeBucket = `week_${week}`;
-    const blockPreds = predictions.filter((p) => p.block_id === regionId);
+    const resolvedId = resolveBlockId(regionId);
+    const blockPreds = predictions.filter((p) => p.block_id === regionId || p.block_id === resolvedId);
     const pred =
       blockPreds.find((p) => p.lead_time_bucket === targetBucket) ??
       blockPreds[0];

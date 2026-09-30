@@ -117,7 +117,7 @@ export function OutlookClient() {
           </div>
           <div className="flex flex-wrap gap-2 justify-center mt-1">
             <Link
-              href="/outlook?block=IND_MH_PUN_001&state=Maharashtra&district=Pune"
+              href="/outlook?block=4515&state=Maharashtra&district=Pune"
               className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold bg-[var(--ink)] text-white hover:opacity-90 transition-opacity"
             >
               <Sparkles size={14} />

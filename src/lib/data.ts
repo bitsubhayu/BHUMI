@@ -33,6 +33,12 @@ import {
 
 export * from './metadata.ts';
 
+export const LEGACY_BLOCK_MAP: Record<string, string> = {
+  'IND_MH_PUN_001': '4515', // Haveli, Pune
+  'IND_RJ_JOD_001': '726',  // Mandor, Jodhpur
+  'IND_WB_KOL_003': '2726', // Barasat-I, North 24 Parganas
+};
+
 /**
  * Reads authoritative model readiness metadata from pipeline artifacts.
  */
@@ -135,7 +141,8 @@ export async function getLivePredictions(blockId?: string): Promise<LivePredicti
       }
 
       if (blockId) {
-        query = query.eq('block_id', blockId);
+        const canonicalId = LEGACY_BLOCK_MAP[blockId] || blockId;
+        query = query.in('block_id', [blockId, canonicalId]);
       }
 
       const { data, error } = await query.range(offset, offset + pageSize - 1);
@@ -173,10 +180,11 @@ export async function getLiveWeatherBufferRecent(blockId: string, limit = 14): P
   }
 
   try {
+    const canonicalId = LEGACY_BLOCK_MAP[blockId] || blockId;
     const { data, error } = await supabase
       .from('live_weather_buffer')
       .select('*')
-      .eq('block_id', blockId)
+      .in('block_id', [blockId, canonicalId])
       .order('observation_date', { ascending: false })
       .limit(limit);
 
