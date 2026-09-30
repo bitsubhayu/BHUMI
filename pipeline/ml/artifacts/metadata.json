@@ -82,8 +82,8 @@
   "architecture": {
     "stage_1": "AnalogEnsemble (Euclidean on ONI/DMI/MJO) + SmallGRU sequence model",
     "stage_2": "LightGBM + XGBoost 2-model ensemble",
-    "stage_3": "Platt Scaling / Isotonic Regression with time-based split",
-    "stage_4": "Sequential Mann-Kendall & Pettitt Change-Point Detection"
+    "stage_3": "Platt Scaling / Isotonic Regression with out-of-sample temporal validation",
+    "stage_4": "Sequential Mann-Kendall & Pettitt Change-Point Detection (Non-parametric regime-shift detection in daily inference)"
   },
   "feature_version": "v1-terrain-telecon-lags-26feat",
   "feature_names": [

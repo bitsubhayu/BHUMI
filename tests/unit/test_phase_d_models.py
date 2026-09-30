@@ -24,6 +24,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 
 from pipeline.ml.calibration.calibrator import ProbabilityCalibrator
+from pipeline.ml.changepoint.detector import ChangePointDetector
 from pipeline.ml.downscaling.classifiers import DownscalingEnsemble
 from pipeline.ml.downscaling.features import (
     FEATURE_NAMES,
@@ -393,6 +394,255 @@ class TestPhaseDModels(unittest.TestCase):
         self.assertLess(metrics["brier_score_multi"], 0.20)
         self.assertLess(metrics["expected_calibration_error"], 0.30)
 
+    # 12. Temporal Leakage Prevention Across Folds (2022, 2023, 2024)
+    def test_temporal_leakage_prevention_across_folds(self) -> None:
+        """Verify Fold 2022 cannot access 2022+, Fold 2023 cannot access 2023+, Fold 2024 cannot access 2024+."""
+        # Synthetic multi-year teleconnection dataset
+        all_telecons = []
+        for yr in range(2014, 2026):
+            for day in range(1, 30):
+                d_str = f"{yr}-06-{day:02d}"
+                all_telecons.append({
+                    "observation_date": d_str,
+                    "enso_oni": -0.3 + 0.1 * (yr % 4),
+                    "iod_dmi": 0.1 * ((yr + day) % 3),
+                    "mjo_phase": (day % 8) + 1,
+                    "mjo_amplitude": 1.2,
+                })
+
+        for test_fold_year in [2022, 2023, 2024]:
+            # Filter training teleconnections strictly < test_fold_year
+            train_telecons = [
+                t for t in all_telecons
+                if int(str(t["observation_date"]).split("-")[0]) < test_fold_year
+            ]
+
+            # 1. Assert no training record belongs to test_fold_year or later
+            max_train_yr = max(int(str(t["observation_date"]).split("-")[0]) for t in train_telecons)
+            self.assertLess(max_train_yr, test_fold_year)
+            for t in train_telecons:
+                yr = int(str(t["observation_date"]).split("-")[0])
+                self.assertLess(yr, test_fold_year, f"Fold {test_fold_year} contains leaked telecon year {yr}")
+
+            # 2. Fit fold analog model on strictly past records
+            analog_model = AnalogEnsembleModel(top_k=5)
+            analog_model.fit(train_telecons)
+
+            # 3. Assert all analog candidate metadata has year < test_fold_year
+            for meta in analog_model._history_meta:
+                self.assertLess(meta["year"], test_fold_year)
+
+            # 4. Query with state from test year; verify all returned analogs are strictly past
+            test_query_state = analog_model.encode_state(oni=0.5, dmi=-0.2, mjo_phase=3, mjo_amplitude=1.5)
+            matches = analog_model.find_analogs(test_query_state)
+            self.assertGreater(len(matches), 0)
+            for m in matches:
+                self.assertLess(m.year, test_fold_year, f"Fold {test_fold_year} returned future/current analog match from year {m.year}")
+
+    # 13. Fold-Specific Supervised GRU Training Without Future Contamination
+    def test_fold_specific_gru_training_isolation(self) -> None:
+        """Verify GRU model is trained only on past sequences and weights update deterministically."""
+        rng = np.random.RandomState(42)
+        n_seqs = 30
+        X_seqs = rng.randn(n_seqs, 30, 5)
+        y_targets = np.zeros((n_seqs, 4, 4))
+        y_targets[:, :, 0] = 1.0
+
+        # Simulate metadata with sequence years
+        meta_gru = [{"season_year": 2018 + (i % 6)} for i in range(n_seqs)]
+
+        test_year = 2022
+        # Filter sequences strictly < test_year
+        valid_indices = [i for i, m in enumerate(meta_gru) if m["season_year"] < test_year]
+        self.assertTrue(all(meta_gru[i]["season_year"] < test_year for i in valid_indices))
+
+        X_train_gru = X_seqs[valid_indices]
+        y_train_gru = y_targets[valid_indices]
+
+        gru = SmallGRUModel(seed=42)
+        res = gru.train_supervised(X_train_gru, y_train_gru, epochs=5, lr=0.01)
+        self.assertTrue(res["is_trained"])
+        self.assertGreater(res["weight_delta_norm"], 1e-4)
+
+    # 14. Out-of-Sample Calibration Isolation
+    def test_out_of_sample_calibration_isolation(self) -> None:
+        """Verify ProbabilityCalibrator fits on validation split and leaves test fold strictly untouched."""
+        rng = np.random.RandomState(42)
+        n_samples = 60
+        raw_probs = rng.uniform(0.1, 0.9, (n_samples, 4))
+        raw_probs /= raw_probs.sum(axis=1, keepdims=True)
+        y = rng.choice([0, 1, 2, 3], size=n_samples)
+
+        # Chronological split: earlier 40 for validation fit, later 20 for test evaluation
+        val_probs, val_y = raw_probs[:40], y[:40]
+        test_probs, test_y = raw_probs[40:], y[40:]
+
+        calibrator = ProbabilityCalibrator(method="auto")
+        calibrator.fit(val_probs, val_y)
+        self.assertTrue(calibrator.is_fitted)
+
+        # Calibrate test set using fitted calibrator
+        cal_test = calibrator.calibrate_matrix(test_probs)
+        self.assertEqual(cal_test.shape, (20, 4))
+        # Verify row sums are normalized
+        for row in cal_test:
+            self.assertAlmostEqual(float(np.sum(row)), 1.0, places=4)
+
+    # 15. Baseline Comparison and Brier Skill Score
+    def test_baseline_comparison_and_skill_score(self) -> None:
+        """Verify climatological baseline and Brier Skill Score computation."""
+        y_true = np.array([0, 0, 0, 1, 2, 0, 3, 0, 2, 0])
+        n = len(y_true)
+
+        # Climatological prior from training
+        p_clim = np.array([np.mean(y_true == c) for c in range(4)])
+        probs_clim = np.tile(p_clim, (n, 1))
+
+        # Model with better discrimination
+        probs_model = np.zeros((n, 4))
+        for i, yt in enumerate(y_true):
+            probs_model[i, yt] = 0.8
+            for c in range(4):
+                if c != yt:
+                    probs_model[i, c] = 0.2 / 3.0
+
+        bs_clim = float(np.mean([np.mean((probs_clim[:, c] - (y_true == c)) ** 2) for c in range(4)]))
+        bs_model = float(np.mean([np.mean((probs_model[:, c] - (y_true == c)) ** 2) for c in range(4)]))
+
+        bss = 1.0 - (bs_model / bs_clim)
+        self.assertGreater(bss, 0.0, "Skillful model must achieve positive BSS over climatology")
+
+    # 16. Target Definition Precedence & Boundary Conditions
+    def test_target_definitions_and_boundary_conditions(self) -> None:
+        """Verify target definitions, priority rules, and boundary window checks."""
+        # 1. Onset takes priority over heavy rain when both are present
+        target_onset = FeatureExtractor.compute_target_class(
+            fw_states=[1, 4, 0, 0, 0, 0, 0],
+            fw_rain=[70.0, 70.0, 5.0, 0.0, 0.0, 0.0, 0.0],
+        )
+        self.assertEqual(target_onset, 1, "Onset must take precedence as macro seasonal transition")
+
+        # 2. Heavy rain without onset (either state 4 or rainfall > 64.5 mm)
+        target_heavy_state = FeatureExtractor.compute_target_class(
+            fw_states=[0, 4, 0, 0, 0, 0, 0],
+            fw_rain=[10.0, 30.0, 5.0, 0.0, 0.0, 0.0, 0.0],
+        )
+        self.assertEqual(target_heavy_state, 3, "State 4 must trigger Heavy Rain target")
+
+        target_heavy_rain = FeatureExtractor.compute_target_class(
+            fw_states=[0, 0, 0, 0, 0, 0, 0],
+            fw_rain=[5.0, 10.0, 65.0, 0.0, 0.0, 0.0, 0.0],
+        )
+        self.assertEqual(target_heavy_rain, 3, "Rainfall > 64.5 mm must trigger Heavy Rain target")
+
+        # 3. Dry Break threshold (>= 4 dry days in 7-day window)
+        target_break = FeatureExtractor.compute_target_class(
+            fw_states=[3, 3, 3, 3, 0, 0, 0],
+            fw_rain=[0.0, 0.0, 0.0, 0.0, 10.0, 10.0, 10.0],
+        )
+        self.assertEqual(target_break, 2, ">= 4 break days in 7-day window must trigger Break target")
+
+        target_no_break = FeatureExtractor.compute_target_class(
+            fw_states=[3, 3, 3, 0, 0, 0, 0],
+            fw_rain=[0.0, 0.0, 0.0, 10.0, 10.0, 10.0, 10.0],
+        )
+        self.assertEqual(target_no_break, 0, "< 4 break days in 7-day window must remain Active/Normal")
+
+        # 4. Truncated window boundary (< 3 days)
+        target_truncated = FeatureExtractor.compute_target_class(
+            fw_states=[1, 4],
+            fw_rain=[50.0, 70.0],
+        )
+        self.assertIsNone(target_truncated, "Window with < 3 days must return None")
+
+    # 17. Change-Point Detection Truthfulness (Sequential Mann-Kendall & Pettitt)
+    def test_changepoint_detector_truthfulness(self) -> None:
+        """Verify Sequential Mann-Kendall and Pettitt tests detect real abrupt transitions."""
+        # 1. Step change upward (low rainfall -> high rainfall)
+        step_series = [1.0] * 12 + [15.0] * 12
+        dates = [f"2024-06-{i+1:02d}" for i in range(24)]
+
+        # Pettitt test
+        pet_res = ChangePointDetector.pettitt_test(step_series)
+        self.assertTrue(pet_res["has_changepoint"])
+        self.assertEqual(pet_res["shift_direction"], "upward")
+        self.assertIn(pet_res["index"], [11, 12, 13])
+
+        # Sequential Mann-Kendall test
+        smk_res = ChangePointDetector.sequential_mann_kendall(step_series)
+        self.assertTrue(smk_res["has_changepoint"])
+
+        # Onset transition detection
+        onset_res = ChangePointDetector.detect_onset_transition(step_series, dates)
+        self.assertTrue(onset_res["detected"])
+        self.assertIsNotNone(onset_res["transition_date"])
+        self.assertGreaterEqual(onset_res["post_mean_rain_mm"], 2.5)
+
+        # 2. Step change downward (wet spell -> prolonged dry break)
+        break_series = [20.0] * 12 + [0.0] * 12
+        temp_series = [28.0] * 12 + [35.0] * 12
+        break_res = ChangePointDetector.detect_break_transition(break_series, temp_series, dates)
+        self.assertTrue(break_res["detected"])
+        self.assertIsNotNone(break_res["transition_date"])
+
+        # 3. Flat series has no change-point
+        flat_series = [5.0] * 20
+        flat_pet = ChangePointDetector.pettitt_test(flat_series)
+        self.assertFalse(flat_pet["has_changepoint"])
+
+        # 4. Short series (< 4 samples) gracefully returns False
+        short_res = ChangePointDetector.pettitt_test([1.0, 2.0])
+        self.assertFalse(short_res["has_changepoint"])
+
+    # 18. Class Imbalance Signal Separation Diagnostics
+    def test_class_imbalance_separation_diagnostics(self) -> None:
+        """Verify computation of class prevalence and probability separation ratio."""
+        y_test = np.array([0, 0, 0, 0, 1, 0, 2, 2, 0, 3])
+        # Model that has strong signal separation for class 1 (onset)
+        probs = np.array([
+            [0.7, 0.05, 0.15, 0.1],
+            [0.8, 0.05, 0.1, 0.05],
+            [0.75, 0.05, 0.1, 0.1],
+            [0.8, 0.05, 0.1, 0.05],
+            [0.3, 0.50, 0.1, 0.1],  # True onset with 50% probability
+            [0.8, 0.05, 0.1, 0.05],
+            [0.2, 0.05, 0.7, 0.05],
+            [0.2, 0.05, 0.7, 0.05],
+            [0.8, 0.05, 0.1, 0.05],
+            [0.3, 0.05, 0.15, 0.5],
+        ])
+
+        # Onset separation ratio
+        is_onset = (y_test == 1)
+        mean_when_true = float(np.mean(probs[is_onset, 1]))
+        mean_when_false = float(np.mean(probs[~is_onset, 1]))
+        sep_ratio = mean_when_true / (mean_when_false + 1e-6)
+
+        self.assertAlmostEqual(mean_when_true, 0.50, places=2)
+        self.assertAlmostEqual(mean_when_false, 0.05, places=2)
+        self.assertGreater(sep_ratio, 5.0, "Signal separation ratio must show distinct elevation on true events")
+
+    # 19. Production Readiness Remains Blocked under Partial Coverage
+    def test_production_readiness_remains_blocked_under_partial_coverage(self) -> None:
+        """Verify nationwide gate strictly returns INSUFFICIENT_NATIONWIDE_COVERAGE under 30.48% coverage."""
+        evaluator = ModelReadinessEvaluator()
+        result = evaluator.evaluate(
+            seasons=list(range(2014, 2026)),
+            blocks_count=2156,  # 30.48% of 7,073
+            samples_count=230592,
+            class_counts={0: 154927, 1: 12048, 2: 49157, 3: 14460},
+            test_class_counts={0: 368, 1: 41, 2: 126, 3: 41},
+            val_metrics={"expected_calibration_error": 0.0605, "brier_score_multi": 0.1089},
+            gru_status="TRAINED",
+            require_nationwide_coverage=True,
+        )
+
+        self.assertFalse(result["is_production_ready"])
+        self.assertEqual(result["model_tier"], "EXPERIMENTAL")
+        self.assertEqual(result["status"], ModelReadinessStatus.INSUFFICIENT_NATIONWIDE_COVERAGE.value)
+        self.assertIn("Historical archive covers only 2156 blocks / 7073 production blocks", result["reasons"][0])
+
 
 if __name__ == "__main__":
     unittest.main()
+

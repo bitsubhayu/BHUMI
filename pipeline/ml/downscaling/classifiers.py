@@ -17,6 +17,8 @@ import lightgbm as lgb
 import numpy as np
 import xgboost as xgb
 
+from sklearn.utils.class_weight import compute_sample_weight
+
 from pipeline.ml.downscaling.features import FEATURE_NAMES
 
 
@@ -27,14 +29,17 @@ class DownscalingEnsemble:
         self,
         lgb_weight: float = 0.50,
         random_state: int = 42,
+        class_weight: Optional[str] = None,
     ) -> None:
         self.lgb_weight = lgb_weight
         self.xgb_weight = 1.0 - lgb_weight
         self.random_state = random_state
+        self.class_weight = class_weight
 
         self.lgb_model = lgb.LGBMClassifier(
             objective="multiclass",
             num_class=4,
+            class_weight=class_weight,
             n_estimators=60,
             learning_rate=0.05,
             max_depth=4,
@@ -73,8 +78,12 @@ class DownscalingEnsemble:
         # Fit LightGBM
         self.lgb_model.fit(X, y)
 
-        # Fit XGBoost
-        self.xgb_model.fit(X, y)
+        # Fit XGBoost (using balanced sample weights if class_weight == 'balanced')
+        if self.class_weight == "balanced":
+            sample_w = compute_sample_weight("balanced", y)
+            self.xgb_model.fit(X, y, sample_weight=sample_w)
+        else:
+            self.xgb_model.fit(X, y)
 
         self.is_fitted = True
         return self

@@ -218,26 +218,97 @@ class FeatureExtractor:
         ]
         return np.array(vals, dtype=np.float64)
 
+    @staticmethod
+    def compute_target_class(fw_states: Sequence[int], fw_rain: Sequence[float]) -> Optional[int]:
+        """Compute deterministic BHUMI target class from forward observation window.
+        
+        Target definitions (monsoon weather state classes):
+          - Class 1: Monsoon Onset. At least one day of state code 1 (onset) in the window.
+                     Takes top precedence as a macro seasonal regime-shift transition.
+          - Class 3: Heavy Rain Spell. At least one day of state code 4 (heavy rain) or
+                     daily rainfall > 64.5 mm (IMD official threshold for heavy precipitation).
+                     Takes second precedence as an immediate extreme hydrometeorological hazard.
+          - Class 2: Prolonged Dry Break. At least 4 days of state code 3 (break) in the 7-day
+                     window (> 50% dry days). Third precedence.
+          - Class 0: Active / Normal Monsoon. Default convective/monsoon state without extreme
+                     rainfall, onset transition, or prolonged break.
+        
+        Boundary handling:
+          - If window has fewer than 3 valid days (e.g. truncated season boundary), returns None.
+        """
+        if len(fw_states) < 3 or len(fw_rain) < 3:
+            return None
+
+        if any(s == 1 for s in fw_states):
+            return 1  # Onset
+        elif any(s == 4 or r > 64.5 for s, r in zip(fw_states, fw_rain)):
+            return 3  # Heavy
+        elif sum(1 for s in fw_states if s == 3) >= 4:
+            return 2  # Break
+        else:
+            return 0  # Active / Normal
+
+    @staticmethod
+    def update_analog_features_in_matrix(
+        X_mat: np.ndarray,
+        meta_list: Sequence[dict[str, Any]],
+        telecon_by_date: dict[str, dict[str, Any]],
+        analog_model: Any,
+    ) -> np.ndarray:
+        """Update columns 9..12 (analog signals) in feature matrix using a fold-specific analog model.
+        
+        Guarantees zero future temporal leakage:
+          - The analog_model must be fitted ONLY on historical teleconnections prior to test_year.
+          - For training samples, excludes the sample's own year (exclude_year=sample_year).
+          - For test samples, queries strictly against the past analog bank in analog_model.
+        """
+        X_updated = X_mat.copy()
+        for i, meta in enumerate(meta_list):
+            obs_date_str = meta.get("date")
+            lead_w = int(meta.get("lead_week", 1))
+            season_yr = int(meta.get("season_year", 0))
+
+            telecon = telecon_by_date.get(obs_date_str)
+            if not telecon:
+                continue
+
+            curr_state = analog_model.encode_state(
+                oni=telecon.get("enso_oni"),
+                dmi=telecon.get("iod_dmi"),
+                mjo_phase=telecon.get("mjo_phase"),
+                mjo_amplitude=telecon.get("mjo_amplitude"),
+            )
+            analog_probs = analog_model.predict_lead_probabilities(curr_state, exclude_year=season_yr)
+            lead_key = f"week_{lead_w}"
+            a_sig = analog_probs.get(lead_key, {})
+
+            X_updated[i, 9] = float(a_sig.get("onset", 0.10))
+            X_updated[i, 10] = float(a_sig.get("active", 0.55))
+            X_updated[i, 11] = float(a_sig.get("break", 0.25))
+            X_updated[i, 12] = float(a_sig.get("heavy", 0.10))
+
+        return X_updated
+
     @classmethod
     def extract_from_seasonal_archives(
         cls,
         blocks_by_id: dict[str, dict[str, Any]],
         seasonal_archives: Sequence[dict[str, Any]],
         telecon_by_date: dict[str, dict[str, Any]],
-        analog_model: Any,
+        analog_model: Optional[Any] = None,
         sample_step: int = 7,
-    ) -> tuple[np.ndarray, np.ndarray, list[dict[str, Any]], np.ndarray, np.ndarray]:
+        return_gru_meta: bool = False,
+    ) -> Any:
         """Generate training dataset from seasonal archives without lookahead leakage.
         
         Climatology is strictly derived from prior completed seasons (year < current_year)
         or strictly historical observations prior to timestamp t (no future days in current season).
         
         Returns:
-            X_tabular: (N, 26) feature matrix for LightGBM/XGBoost
-            y_tabular: (N,) target classes [0: Active, 1: Onset, 2: Break, 3: Heavy]
-            meta_rows: list of metadata dicts
-            X_gru: (N_seq, 30, 5) teleconnection sequences for GRU training
-            y_gru: (N_seq, 4, 4) target lead distributions for GRU training
+            If return_gru_meta is False (default):
+                (X_tabular, y_tabular, meta_list, X_gru, y_gru)
+            If return_gru_meta is True:
+                (X_tabular, y_tabular, meta_list, X_gru, y_gru, meta_gru)
         """
         X_list: list[np.ndarray] = []
         y_list: list[int] = []
@@ -245,6 +316,7 @@ class FeatureExtractor:
 
         X_gru_list: list[np.ndarray] = []
         y_gru_list: list[np.ndarray] = []
+        meta_gru_list: list[dict[str, Any]] = []
 
         # Sort dates for continuous sequence extraction
         sorted_telecon_dates = sorted(telecon_by_date.keys())
@@ -299,13 +371,19 @@ class FeatureExtractor:
                 if any(telecon.get(k) is None for k in ("enso_oni", "iod_dmi")):
                     continue
 
-                curr_state = analog_model.encode_state(
-                    oni=telecon.get("enso_oni"),
-                    dmi=telecon.get("iod_dmi"),
-                    mjo_phase=telecon.get("mjo_phase"),
-                    mjo_amplitude=telecon.get("mjo_amplitude"),
-                )
-                analog_probs = analog_model.predict_lead_probabilities(curr_state, exclude_year=year)
+                if analog_model is not None:
+                    curr_state = analog_model.encode_state(
+                        oni=telecon.get("enso_oni"),
+                        dmi=telecon.get("iod_dmi"),
+                        mjo_phase=telecon.get("mjo_phase"),
+                        mjo_amplitude=telecon.get("mjo_amplitude"),
+                    )
+                    analog_probs = analog_model.predict_lead_probabilities(curr_state, exclude_year=year)
+                else:
+                    analog_probs = {
+                        f"week_{w}": {"onset": 0.10, "active": 0.55, "break": 0.25, "heavy": 0.10}
+                        for w in range(1, 5)
+                    }
 
                 lead_dist = np.zeros((4, 4), dtype=np.float64)
 
@@ -318,9 +396,23 @@ class FeatureExtractor:
                     clim_mean = float(np.mean(past_only_rain))
                     clim_std = float(np.std(past_only_rain)) + 1e-4
 
+                has_valid_lead = False
                 for lead_w in range(1, 5):
                     lead_key = f"week_{lead_w}"
                     a_signals = analog_probs.get(lead_key, {})
+
+                    # Forward target window
+                    fw_start = t + (lead_w - 1) * 7
+                    fw_end = min(214, t + lead_w * 7)
+                    if fw_start >= 214 or (fw_end - fw_start) < 3:
+                        continue
+
+                    fw_states = state_series[fw_start:fw_end]
+                    fw_rain = rain_series[fw_start:fw_end]
+
+                    target = cls.compute_target_class(fw_states, fw_rain)
+                    if target is None:
+                        continue
 
                     # Extract past window
                     past_rain = rain_series[max(0, t - 14) : t]
@@ -344,22 +436,8 @@ class FeatureExtractor:
                     except MissingFeatureError:
                         continue
 
-                    # Forward target window
-                    fw_start = t + (lead_w - 1) * 7
-                    fw_end = min(214, t + lead_w * 7)
-                    fw_states = state_series[fw_start:fw_end]
-                    fw_rain = rain_series[fw_start:fw_end]
-
-                    if any(s == 1 for s in fw_states):
-                        target = 1  # Onset
-                    elif any(s == 4 or r > 64.5 for s, r in zip(fw_states, fw_rain)):
-                        target = 3  # Heavy
-                    elif sum(1 for s in fw_states if s == 3) >= 4:
-                        target = 2  # Break
-                    else:
-                        target = 0  # Active / Normal
-
                     lead_dist[lead_w - 1, target] = 1.0
+                    has_valid_lead = True
 
                     X_list.append(feat)
                     y_list.append(target)
@@ -371,29 +449,37 @@ class FeatureExtractor:
                         "target_class": target,
                     })
 
-                # Extract 30-day teleconnection sequence for GRU
-                date_idx = sorted_telecon_dates.index(obs_date_str) if obs_date_str in sorted_telecon_dates else -1
-                if date_idx >= 30:
-                    seq_dates = sorted_telecon_dates[date_idx - 30 : date_idx]
-                    seq_vecs = []
-                    for sd in seq_dates:
-                        rec = telecon_by_date[sd]
-                        amp = float(rec.get("mjo_amplitude") or 1.0)
-                        phase = int(rec.get("mjo_phase") or 1)
-                        ang = 2.0 * np.pi * (phase - 1) / 8.0
-                        seq_vecs.append([
-                            float(rec.get("enso_oni") or 0.0),
-                            float(rec.get("iod_dmi") or 0.0),
-                            amp * np.cos(ang),
-                            amp * np.sin(ang),
-                            amp,
-                        ])
-                    X_gru_list.append(np.array(seq_vecs, dtype=np.float64))
-                    y_gru_list.append(lead_dist)
+                # Extract 30-day teleconnection sequence for GRU if at least one lead week was valid
+                if has_valid_lead:
+                    date_idx = sorted_telecon_dates.index(obs_date_str) if obs_date_str in sorted_telecon_dates else -1
+                    if date_idx >= 30:
+                        seq_dates = sorted_telecon_dates[date_idx - 30 : date_idx]
+                        seq_vecs = []
+                        for sd in seq_dates:
+                            rec = telecon_by_date[sd]
+                            amp = float(rec.get("mjo_amplitude") or 1.0)
+                            phase = int(rec.get("mjo_phase") or 1)
+                            ang = 2.0 * np.pi * (phase - 1) / 8.0
+                            seq_vecs.append([
+                                float(rec.get("enso_oni") or 0.0),
+                                float(rec.get("iod_dmi") or 0.0),
+                                amp * np.cos(ang),
+                                amp * np.sin(ang),
+                                amp,
+                            ])
+                        X_gru_list.append(np.array(seq_vecs, dtype=np.float64))
+                        y_gru_list.append(lead_dist)
+                        meta_gru_list.append({
+                            "block_id": block_id,
+                            "season_year": year,
+                            "date": obs_date_str,
+                        })
 
         X_tab = np.vstack(X_list) if X_list else np.empty((0, len(FEATURE_NAMES)))
         y_tab = np.array(y_list, dtype=int) if y_list else np.empty(0, dtype=int)
         X_gru = np.stack(X_gru_list, axis=0) if X_gru_list else np.empty((0, 30, 5))
         y_gru = np.stack(y_gru_list, axis=0) if y_gru_list else np.empty((0, 4, 4))
 
+        if return_gru_meta:
+            return X_tab, y_tab, meta_list, X_gru, y_gru, meta_gru_list
         return X_tab, y_tab, meta_list, X_gru, y_gru

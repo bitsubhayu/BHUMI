@@ -138,8 +138,11 @@ def compute_probabilistic_metrics(
                     "samples": int(np.sum(mask)),
                 }
 
+    overall_acc = round(float(np.mean(pred_classes == y_true)), 4)
+
     return {
         "sample_count": n_samples,
+        "accuracy": overall_acc,
         "brier_score_multi": brier_multi,
         "brier_scores_per_class": brier_scores,
         "log_loss": overall_log_loss,

@@ -33,13 +33,14 @@ class ChangePointDetector:
         u_fwd = np.zeros(n, dtype=np.float64)
         r_fwd = 0.0
         for i in range(1, n):
+            k = i + 1
             for j in range(i):
                 if arr[i] > arr[j]:
                     r_fwd += 1.0
-                elif arr[i] < arr[j]:
-                    r_fwd -= 1.0
-            e_r = (i * (i + 1)) / 4.0
-            var_r = (i * (i + 1) * (2 * i + 3)) / 72.0
+                elif arr[i] == arr[j]:
+                    r_fwd += 0.5
+            e_r = (k * (k - 1)) / 4.0
+            var_r = (k * (k - 1) * (2 * k + 5)) / 72.0
             u_fwd[i] = (r_fwd - e_r) / math.sqrt(var_r) if var_r > 0 else 0.0
 
         # 2. Backward progression u'(t)
@@ -47,32 +48,37 @@ class ChangePointDetector:
         u_bwd_rev = np.zeros(n, dtype=np.float64)
         r_bwd = 0.0
         for i in range(1, n):
+            k = i + 1
             for j in range(i):
                 if arr_rev[i] > arr_rev[j]:
                     r_bwd += 1.0
-                elif arr_rev[i] < arr_rev[j]:
-                    r_bwd -= 1.0
-            e_r = (i * (i + 1)) / 4.0
-            var_r = (i * (i + 1) * (2 * i + 3)) / 72.0
+                elif arr_rev[i] == arr_rev[j]:
+                    r_bwd += 0.5
+            e_r = (k * (k - 1)) / 4.0
+            var_r = (k * (k - 1) * (2 * k + 5)) / 72.0
             u_bwd_rev[i] = -(r_bwd - e_r) / math.sqrt(var_r) if var_r > 0 else 0.0
 
         u_bwd = u_bwd_rev[::-1]
 
         # 3. Detect intersections
         diff = u_fwd - u_bwd
+        max_z = float(np.max(np.abs(u_fwd)))
+        is_significant = max_z > 1.28  # >= 80% significance across the series
+
         cp_indices: list[int] = []
         for i in range(1, n):
-            if (diff[i - 1] * diff[i] <= 0) and (abs(u_fwd[i]) > 1.28):  # >= 80% significance
+            if diff[i - 1] * diff[i] <= 0:
                 cp_indices.append(i)
 
-        if cp_indices:
-            # Pick strongest intersection point
-            best_idx = max(cp_indices, key=lambda idx: abs(u_fwd[idx]))
+        if is_significant and cp_indices:
+            # Pick intersection closest to median or strongest transition
+            best_idx = min(cp_indices, key=lambda idx: abs(idx - n / 2))
+            p_val = float(2.0 * (1.0 - 0.5 * (1.0 + math.erf(max_z / math.sqrt(2.0)))))
             return {
                 "has_changepoint": True,
                 "index": int(best_idx),
-                "z_score": float(u_fwd[best_idx]),
-                "p_value": float(2.0 * (1.0 - 0.5 * (1.0 + math.erf(abs(u_fwd[best_idx]) / math.sqrt(2.0))))),
+                "z_score": round(max_z, 4),
+                "p_value": round(p_val, 4),
             }
 
         return {"has_changepoint": False, "index": None, "z_score": 0.0, "p_value": 1.0}

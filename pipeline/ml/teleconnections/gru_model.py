@@ -96,17 +96,30 @@ class SmallGRUModel:
             return out[0]
         return out
 
-    def predict_lead_probabilities(self, sequence: np.ndarray) -> dict[str, dict[str, float]]:
-        """Compute normalized lead-time probabilities for week_1 through week_4."""
+    def predict_lead_matrix(self, sequence: np.ndarray) -> np.ndarray:
+        """Compute normalized lead-time probabilities as (4, 4) matrix.
+        
+        Rows: lead weeks 1..4 (indices 0..3)
+        Columns: [Active, Onset, Break, Heavy] (classes 0..3)
+        """
         if sequence.shape[0] < 14:
             padding = np.repeat(sequence[:1], 14 - sequence.shape[0], axis=0)
             sequence = np.vstack([padding, sequence])
 
         logits = self.forward(sequence)  # (4, 4)
         probs = self._softmax(logits)     # (4, 4)
+        return probs
+
+    def predict_lead_probabilities(self, sequence: np.ndarray) -> dict[str, dict[str, float]]:
+        """Compute normalized lead-time probabilities for week_1 through week_4.
+        
+        State order aligns with BHUMI classes:
+          0: active, 1: onset, 2: break, 3: heavy
+        """
+        probs = self.predict_lead_matrix(sequence)
 
         leads = ["week_1", "week_2", "week_3", "week_4"]
-        states = ["onset", "active", "break", "heavy"]
+        states = ["active", "onset", "break", "heavy"]
 
         result: dict[str, dict[str, float]] = {}
         for w_idx, lead in enumerate(leads):

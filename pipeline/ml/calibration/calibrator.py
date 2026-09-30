@@ -168,6 +168,29 @@ class ProbabilityCalibrator:
         calibrated["calibrated_confidence"] = confidence
         return calibrated
 
+    def calibrate_matrix(self, raw_probs: np.ndarray) -> np.ndarray:
+        """Vectorized calibration for an (N, 4) raw probability matrix.
+        
+        Columns: [Active, Onset, Break, Heavy] (indices 0..3)
+        Returns: (N, 4) calibrated probability matrix with normalized rows.
+        """
+        n_samples = raw_probs.shape[0]
+        calibrated = np.zeros_like(raw_probs, dtype=np.float64)
+        for i in range(n_samples):
+            cal = self.calibrate(
+                raw_onset_p=raw_probs[i, 1],
+                raw_break_p=raw_probs[i, 2],
+                raw_heavy_p=raw_probs[i, 3],
+            )
+            p_onset = cal["onset_prob"] / 100.0
+            p_break = cal["break_prob"] / 100.0
+            p_heavy = cal["heavy_prob"] / 100.0
+            p_active = max(0.0, 1.0 - (p_onset + p_break + p_heavy))
+            row = np.array([p_active, p_onset, p_break, p_heavy], dtype=np.float64)
+            row_sum = np.sum(row)
+            calibrated[i] = row / (row_sum if row_sum > 0 else 1.0)
+        return calibrated
+
     def save(self, filepath: Path) -> None:
         """Save calibrator parameters to JSON."""
         filepath.parent.mkdir(parents=True, exist_ok=True)
