@@ -169,11 +169,12 @@ Phase C establishes the operational data foundation populating `public.teleconne
    - **7,073 Production Restriction**: Weather records are strictly restricted to the 7,073 authoritative production blocks. The 250 pending blocks remain completely excluded.
 
 5. **Verified Database Coverage Status**:
-   - `historical_block_coverage`: 16/7,073 (with 6 representative blocks having 100% 12-season completeness).
-   - `historical_block_season_rows`: 82 rows.
+   - `historical_block_coverage`: 2,156/7,073 blocks (30.48% nationwide coverage; 6 representative benchmark blocks with 100% 12-season completeness).
+   - `historical_block_season_rows`: 2,402 block-season rows.
    - `season_year coverage`: [2014, 2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025] (12 seasons).
-   - `live_weather_block_coverage`: 4,951/7,073 blocks (70.0% nationwide production coverage).
-   - `live_weather_buffer rows`: 10,076 rows (all $\le 90$ days old, verified physically valid).
+   - `live_weather_block_coverage`: 5,001/7,073 blocks (70.71% nationwide production coverage).
+   - `live_weather_buffer rows`: 10,176 rows (all $\le 90$ days old, verified physically valid, 0 out-of-range).
    - `teleconnection_date_coverage`: 4,595 dates (4,595 rows, 100% unique dates covering 2014-01-01 to 2026-07-31).
+   - `storage_footprint`: ~39 MB total public schema, well within the 500 MB budget (>92% headroom).
 
 

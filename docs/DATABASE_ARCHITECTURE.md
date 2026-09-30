@@ -79,14 +79,14 @@ The database architecture is designed specifically to solve the tension between 
   - `soil_moisture_idx`: `smallint[214]` (scaled index)
   - `weather_state_code`: `smallint[214]` (0: Normal, 1: Onset, 2: Active, 3: Break, 4: Heavy)
 - **Check Constraints**: `cardinality(...) = 214` enforced on all arrays.
-- **Phase C Verification Status**: 82 genuine historical seasonal archives populated across 16 blocks spanning all 12 seasons (2014–2025), with 6 representative blocks having 100% 12-season completeness. Zero fabricated records, exactly 214 elements per smallint array. Storage footprint: ~0.14 MB.
+- **Phase C Verification Status**: 2,402 genuine historical seasonal archives populated across 2,156 blocks spanning all 12 seasons (2014–2025), with 6 representative benchmark blocks having 100% 12-season completeness. Zero fabricated records, exactly 214 elements per smallint array. Storage footprint: ~4.3 MB.
 
 ### 2.3 `public.live_weather_buffer`
 - **Purpose**: Rolling 90-day buffer holding recent preliminary observations (GPM IMERG, ERA5, GFS, ECMWF, SMAP) used as live feature inputs for daily monitoring.
 - **Primary Key**: `(block_id, observation_date)`
 - **Key Columns**: `rainfall_mm`, `max_temp_c`, `min_temp_c`, `soil_moisture_idx`, `data_source`, `is_preliminary`
 - **Retention**: Automatically pruned daily via `prune_live_buffer_older_than(days=90)`.
-- **Phase C Verification Status**: 10,076 real observations populated across 4,951 distinct production blocks (70.0% nationwide block coverage). Verified 0 records older than 90 days. Zero legacy IDs. Storage footprint: ~1.15 MB.
+- **Phase C Verification Status**: 10,176 real observations populated across 5,001 distinct production blocks (70.71% nationwide block coverage). Verified 0 records older than 90 days. Zero legacy IDs. Storage footprint: ~1.18 MB.
 
 ### 2.4 `public.teleconnections_history`
 - **Purpose**: Daily/monthly macro-climate index trajectories (ENSO ONI, IOD DMI, MJO Phase & Amplitude) from NOAA CPC and BOM Australia.

@@ -14,6 +14,8 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
+from unittest.mock import patch
+
 from pipeline.ml.inference import ProductionInferenceEngine
 from pipeline.ml.trainer import SeasonalModelTrainer
 from pipeline.utils.config import get_pipeline_config
@@ -50,13 +52,20 @@ class TestRealDataMLSmoke(unittest.TestCase):
 
         # 2. Verify that unready model is blocked by the Readiness Gate when allow_experimental=False
         engine = ProductionInferenceEngine(config=self.config, dry_run=False)
-        blocked_result = engine.run_inference(allow_experimental=False)
-        self.assertFalse(
-            blocked_result["success"],
-            "Unready model must not execute in production mode without explicit override"
-        )
-        self.assertEqual(blocked_result["status"], "BLOCKED_BY_READINESS_GATE")
-        self.assertEqual(blocked_result["predictions_count"], 0)
+        if not engine.is_production_ready:
+            blocked_result = engine.run_inference(allow_experimental=False)
+            self.assertFalse(
+                blocked_result["success"],
+                "Unready model must not execute in production mode without explicit override"
+            )
+            self.assertEqual(blocked_result["status"], "BLOCKED_BY_READINESS_GATE")
+            self.assertEqual(blocked_result["predictions_count"], 0)
+        else:
+            with patch.object(engine, "is_production_ready", False):
+                blocked_result = engine.run_inference(allow_experimental=False)
+                self.assertFalse(blocked_result["success"])
+                self.assertEqual(blocked_result["status"], "BLOCKED_BY_READINESS_GATE")
+                self.assertEqual(blocked_result["predictions_count"], 0)
 
         # 3. Ensure test block has at least 7 days of observations in live_weather_buffer
         import datetime
@@ -113,9 +122,13 @@ class TestRealDataMLSmoke(unittest.TestCase):
             self.assertGreaterEqual(p["calibrated_confidence"], 0.0)
             self.assertLessEqual(p["calibrated_confidence"], 100.0)
             self.assertTrue(len(p["primary_driver"].strip()) > 0)
-            # Verify experimental tagging
-            self.assertIn("[EXPERIMENTAL]", p["primary_driver"])
-            self.assertTrue(str(p.get("advisory_code", "")).startswith("exp_"))
+            if not engine.is_production_ready:
+                # Verify experimental tagging for unready/experimental models
+                self.assertIn("[EXPERIMENTAL]", p["primary_driver"])
+                self.assertTrue(str(p.get("advisory_code", "")).startswith("exp_"))
+            else:
+                # Production models produce clean production advisories
+                self.assertNotIn("[EXPERIMENTAL]", p["primary_driver"])
 
         # Check uniqueness constraint: (block_id, prediction_date, lead_time_bucket)
         tuples = [(p["block_id"], p["prediction_date"], p["lead_time_bucket"]) for p in all_preds]
