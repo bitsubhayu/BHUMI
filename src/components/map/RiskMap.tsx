@@ -53,21 +53,26 @@ export function RiskMap({
   // Property name in geojson features corresponding to active selection
   const activePropertyKey = `${activeBucket}_${activeMetric}`;
 
-  // Build MapLibre color expression based on the 5-level risk thresholds
+  // Build MapLibre color expression based on the 5-level risk thresholds with neutral slate for uncovered blocks
   const getColorExpression = useCallback(
     (propKey: string): maplibregl.ExpressionSpecification => {
       return [
-        'step',
-        ['coalesce', ['get', propKey], 0],
-        RISK_LEVELS.low.hexColor,      // < 20%
-        20,
-        RISK_LEVELS.moderate.hexColor, // 20 - 39%
-        40,
-        RISK_LEVELS.elevated.hexColor, // 40 - 59%
-        60,
-        RISK_LEVELS.high.hexColor,     // 60 - 79%
-        80,
-        RISK_LEVELS.very_high.hexColor // >= 80%
+        'case',
+        ['==', ['get', 'is_data_available'], false],
+        '#94a3b8', // Neutral slate for blocks with insufficient historical data
+        [
+          'step',
+          ['coalesce', ['get', propKey], 0],
+          RISK_LEVELS.low.hexColor,      // < 20%
+          20,
+          RISK_LEVELS.moderate.hexColor, // 20 - 39%
+          40,
+          RISK_LEVELS.elevated.hexColor, // 40 - 59%
+          60,
+          RISK_LEVELS.high.hexColor,     // 60 - 79%
+          80,
+          RISK_LEVELS.very_high.hexColor // >= 80%
+        ]
       ];
     },
     []
@@ -256,13 +261,29 @@ export function RiskMap({
         const props = feature.properties as BlockMapFeatureProperties;
         const coordinates = e.lngLat;
 
+        const isUnavailable = props.is_data_available === false;
         const val = props[activePropertyKey as keyof BlockMapFeatureProperties];
-        const valText = typeof val === 'number' ? `${Math.round(val * 10) / 10}%` : 'N/A';
-        const metricName = activeMetric === 'break' ? 'Break Risk' : activeMetric === 'onset' ? 'Onset Prob' : 'Heavy Rain Risk';
+        const valText = isUnavailable
+          ? 'Data Insufficient'
+          : typeof val === 'number'
+            ? `${Math.round(val * 10) / 10}%`
+            : 'N/A';
+        const metricName =
+          activeMetric === 'break'
+            ? 'Break Risk'
+            : activeMetric === 'onset'
+              ? 'Onset Prob'
+              : 'Heavy Rain Risk';
 
         const repNotice = props.is_centroid_fallback
           ? '<div style="font-size: 10px; color: #64748b; margin-top: 3px; font-style: italic;">• Centroid representation (boundary geom pending)</div>'
           : '<div style="font-size: 10px; color: #059669; margin-top: 3px; font-weight: 500;">• PostGIS Boundary Polygon</div>';
+
+        const statusNotice = isUnavailable
+          ? '<div style="font-size: 10px; color: #64748b; margin-top: 4px; padding: 2px 4px; background: #f1f5f9; border-radius: 3px;">Forecast Unavailable: Meteorological archive insufficient for downscaling</div>'
+          : props.is_experimental
+            ? '<div style="font-size: 9px; color: #d97706; margin-top: 4px; font-weight: 500;">Experimental Tier</div>'
+            : '';
 
         const html = `
           <div style="font-family: inherit; padding: 4px 6px; min-width: 140px;">
@@ -270,9 +291,9 @@ export function RiskMap({
             <div style="font-size: 11px; color: #64748b; margin-bottom: 6px;">${props.district_name}, ${props.state_name}</div>
             <div style="display: flex; align-items: center; justify-content: space-between; font-size: 12px; font-weight: 600; padding: 4px 6px; background: #f8fafc; border-radius: 4px;">
               <span>${metricName} (${activeBucket.replace('_', ' ')}):</span>
-              <span style="color: #0f172a; margin-left: 8px;">${valText}</span>
+              <span style="color: ${isUnavailable ? '#64748b' : '#0f172a'}; margin-left: 8px;">${valText}</span>
             </div>
-            ${props.is_experimental ? '<div style="font-size: 9px; color: #d97706; margin-top: 4px; font-weight: 500;">Experimental Tier</div>' : ''}
+            ${statusNotice}
             ${repNotice}
           </div>
         `;
@@ -503,6 +524,21 @@ export function RiskMap({
             </div>
           </div>
         )}
+
+        {/* Floating Risk Scale & Coverage Legend */}
+        <div className="absolute bottom-4 left-4 z-10 bg-background/95 backdrop-blur border border-border/80 rounded-xl p-2.5 px-3 shadow-md hidden sm:block">
+          <div className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider mb-1.5">Risk &amp; Coverage Scale</div>
+          <div className="flex items-center gap-2.5 text-[11px] font-medium text-foreground">
+            <div className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: RISK_LEVELS.low.hexColor }} /> &lt;20%</div>
+            <div className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: RISK_LEVELS.moderate.hexColor }} /> 20–39%</div>
+            <div className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: RISK_LEVELS.elevated.hexColor }} /> 40–59%</div>
+            <div className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: RISK_LEVELS.high.hexColor }} /> 60–79%</div>
+            <div className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: RISK_LEVELS.very_high.hexColor }} /> ≥80%</div>
+            <div className="flex items-center gap-1 text-slate-500 dark:text-slate-400 border-l border-border/60 pl-2">
+              <span className="w-2.5 h-2.5 rounded-full bg-slate-400" /> Data Insufficient
+            </div>
+          </div>
+        </div>
 
         {/* Empty state overlay if no blocks available */}
         {blocks.length === 0 && (

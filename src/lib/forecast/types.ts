@@ -50,6 +50,8 @@ export interface RegionRisk {
   reliability: 'low' | 'medium' | 'high';
   drivers: Record<Hazard, Driver[]>;
   isEstimate: boolean; // true for panchayat-level values
+  isAvailable?: boolean; // false when data/predictions are insufficient
+  dataStatus?: 'available' | 'insufficient_history';
 }
 
 export interface Advisory {

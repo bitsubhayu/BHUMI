@@ -748,6 +748,7 @@ export const supabaseRepository: ForecastRepository = {
         }
 
         const denom = countPred > 0 ? countPred : 1;
+        const hasPreds = countPred > 0;
 
         features.push({
           type: 'Feature',
@@ -762,6 +763,8 @@ export const supabaseRepository: ForecastRepository = {
             state: first.state_name,
             level: 'district',
             block_count: dBlocks.length,
+            is_data_available: hasPreds,
+            data_status: hasPreds ? 'available' : 'insufficient_history',
             onset_w1: countPred > 0 ? Math.round(sumOnsetW1 / denom) : 0,
             onset_w2: countPred > 0 ? Math.round(sumOnsetW2 / denom) : 0,
             onset_w3: countPred > 0 ? Math.round(sumOnsetW3 / denom) : 0,
@@ -880,6 +883,7 @@ export const supabaseRepository: ForecastRepository = {
       const w2 = bPreds?.get('week_2');
       const w3 = bPreds?.get('week_3');
       const w4 = bPreds?.get('week_4');
+      const hasPreds = Boolean(w1);
 
       const { geometry, representation, isCentroidFallback } = resolveBlockGeometry(effectiveBlock);
 
@@ -889,6 +893,8 @@ export const supabaseRepository: ForecastRepository = {
         district: block.district_name,
         state: block.state_name,
         level: 'block',
+        is_data_available: hasPreds,
+        data_status: hasPreds ? 'available' : 'insufficient_history',
         elevation_m: block.elevation_m,
         slope_deg: block.slope_deg,
         distance_to_coast_km: block.distance_to_coast_km,
@@ -949,6 +955,8 @@ export const supabaseRepository: ForecastRepository = {
           heavy_rain: [],
         },
         isEstimate: false,
+        isAvailable: false,
+        dataStatus: 'insufficient_history',
       };
     }
 

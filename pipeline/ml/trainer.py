@@ -91,12 +91,12 @@ class SeasonalModelTrainer:
             f"Class distribution: {class_counts}"
         )
 
-        # 3. Supervised GRU Training or Explicit Disabling
+        # 4. Supervised GRU Training or Explicit Disabling
         self.logger.info("Evaluating Stage 1 GRU sequence training...")
         telecon_ensemble.fit(telecons, X_seqs=X_gru, y_targets=y_gru)
         self.logger.info(f"Stage 1 GRU status: {telecon_ensemble.gru_status} (enabled={telecon_ensemble.gru_enabled})")
 
-        # 4. Strict Model Readiness Evaluation Gate
+        # 5. Fit Downscaling Ensemble (LightGBM + XGBoost) and Calibrator
         splitter = RollingOriginSplitter()
         splits = list(splitter.split(meta)) if meta else []
         active_split = splits[-1] if splits else None
@@ -106,23 +106,6 @@ class SeasonalModelTrainer:
             y_test_tmp = y[active_split.test_indices]
             test_class_counts = {int(c): int(np.sum(y_test_tmp == c)) for c in (0, 1, 2, 3)}
 
-        readiness = ModelReadinessEvaluator.evaluate(
-            seasons=distinct_seasons,
-            blocks_count=unique_blocks_count,
-            samples_count=n_samples,
-            class_counts=class_counts,
-            test_class_counts=test_class_counts,
-            gru_status=telecon_ensemble.gru_status,
-        )
-
-        self.logger.info(
-            f"MODEL READINESS EVALUATION: status={readiness['status']}, "
-            f"tier={readiness['model_tier']}, is_production_ready={readiness['is_production_ready']}"
-        )
-        for r in readiness["reasons"]:
-            self.logger.warning(f"  [Readiness Deficiency] {r}")
-
-        # 5. Fit Downscaling Ensemble (LightGBM + XGBoost)
         if n_samples < 10 or len(np.unique(y)) < 2:
             self.logger.warning("Insufficient samples or class diversity in archive. Initializing baseline fallback.")
             downscaling_ensemble = DownscalingEnsemble()
@@ -165,6 +148,25 @@ class SeasonalModelTrainer:
                 f"Validation Results: Multi-Brier={metrics.get('brier_score_multi')}, "
                 f"ECE={metrics.get('expected_calibration_error')}, LogLoss={metrics.get('log_loss')}"
             )
+
+        # 6. Strict Model Readiness Evaluation Gate (Evaluated after training & validation)
+        readiness = ModelReadinessEvaluator.evaluate(
+            seasons=distinct_seasons,
+            blocks_count=unique_blocks_count,
+            samples_count=n_samples,
+            class_counts=class_counts,
+            test_class_counts=test_class_counts,
+            val_metrics=metrics,
+            gru_status=telecon_ensemble.gru_status,
+            require_nationwide_coverage=True,
+        )
+
+        self.logger.info(
+            f"MODEL READINESS EVALUATION: status={readiness['status']}, "
+            f"tier={readiness['model_tier']}, is_production_ready={readiness['is_production_ready']}"
+        )
+        for r in readiness["reasons"]:
+            self.logger.warning(f"  [Readiness Deficiency] {r}")
 
         metadata = {
             "model_version": "v1.0.0",

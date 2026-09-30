@@ -39,6 +39,8 @@ export interface BlockMapFeatureProperties {
   primary_driver: string | null;
   analog_year: number | null;
   is_experimental: boolean;
+  is_data_available?: boolean;
+  data_status?: 'available' | 'insufficient_history';
   representation: 'boundary_polygon' | 'centroid_fallback';
   is_centroid_fallback: boolean;
 }
@@ -127,6 +129,7 @@ export function buildBlockGeoJSON(
     const w2 = leads.week_2;
     const w3 = leads.week_3;
     const w4 = leads.week_4;
+    const hasPreds = Boolean(w1);
 
     const { geometry, representation, isCentroidFallback } = resolveBlockGeometry(block);
 
@@ -139,6 +142,8 @@ export function buildBlockGeoJSON(
       slope_deg: block.slope_deg,
       distance_to_coast_km: block.distance_to_coast_km,
       agro_climatic_zone: block.agro_climatic_zone,
+      is_data_available: hasPreds,
+      data_status: hasPreds ? 'available' : 'insufficient_history',
       week_1_break: w1?.break_probability ?? null,
       week_1_onset: w1?.onset_probability ?? null,
       week_1_heavy: w1?.heavy_spell_probability ?? null,

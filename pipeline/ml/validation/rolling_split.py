@@ -50,12 +50,13 @@ class RollingOriginSplitter:
             return
 
         total_seasons = len(all_years)
-        for i in range(self.min_train_years, total_seasons - self.test_years_count + 1):
+        max_train_start = total_seasons - self.val_years_count - self.test_years_count + 1
+        for i in range(self.min_train_years, max(self.min_train_years + 1, max_train_start)):
             train_yr = all_years[:i]
             val_yr = all_years[i : i + self.val_years_count]
             test_yr = all_years[i + self.val_years_count : i + self.val_years_count + self.test_years_count]
 
-            if not val_yr:
+            if not val_yr or not test_yr:
                 continue
 
             train_idx = [idx for idx, m in enumerate(meta_rows) if int(m.get("season_year", 0)) in train_yr]

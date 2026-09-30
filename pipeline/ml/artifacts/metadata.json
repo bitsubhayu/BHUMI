@@ -1,57 +1,83 @@
 {
   "model_version": "v1.0.0",
   "model_name": "BHUMI-Probabilistic-Downscaling-Engine",
-  "trained_at": "2026-09-28 05:34:45.959006+00:00",
+  "trained_at": "2026-09-30 13:27:02.702602+00:00",
   "model_tier": "EXPERIMENTAL",
   "model_readiness": {
-    "status": "INSUFFICIENT_CLASS_DIVERSITY",
+    "status": "INSUFFICIENT_NATIONWIDE_COVERAGE",
     "is_production_ready": false,
     "model_tier": "EXPERIMENTAL",
+    "nationwide_coverage_pct": 30.48,
     "reasons": [
-      "Archive contains only 1 season(s) ([2024]); minimum 3 required for multi-year ENSO/IOD cycle validation.",
-      "Archive contains only 2 block(s); minimum 20 required across diverse agro-climatic zones.",
-      "Dataset contains only 96 samples; minimum 1000 required for reliable downscaling.",
-      "Statistically inadequate minority class representation: Onset (count=4, required=30), Break (count=22, required=30), Heavy-Rain (count=4, required=30).",
-      "Held-out test set lacks adequate representation for: Onset, Heavy-Rain (minimum 5 samples each in test set for credible recall/precision evaluation)."
+      "Historical archive covers only 2156 / 7073 production blocks (30.48%); minimum 6000 blocks (85.0% nationwide coverage) required for national production readiness."
     ],
     "archive_summary": {
       "seasons": [
-        2024
+        2014,
+        2015,
+        2016,
+        2017,
+        2018,
+        2019,
+        2020,
+        2021,
+        2022,
+        2023,
+        2024,
+        2025
       ],
-      "seasons_count": 1,
-      "blocks_count": 2,
-      "samples_count": 96,
+      "seasons_count": 12,
+      "blocks_count": 2156,
+      "total_blocks_in_country": 7073,
+      "nationwide_coverage_pct": 30.48,
+      "samples_count": 230592,
       "class_distribution": {
-        "Active/Normal": 66,
-        "Onset": 4,
-        "Break": 22,
-        "Heavy-Rain": 4
+        "Active/Normal": 154927,
+        "Onset": 12048,
+        "Break": 49157,
+        "Heavy-Rain": 14460
       }
     },
-    "gru_status": "DISABLED_INSUFFICIENT_TRAINING_DATA (samples=48, required=100)",
+    "gru_status": "TRAINED",
     "production_gate_thresholds": {
-      "min_seasons": 3,
-      "min_blocks": 20,
-      "min_samples": 1000,
-      "min_samples_per_class": 30
+      "total_production_blocks": 7073,
+      "min_nationwide_blocks": 6000,
+      "min_nationwide_coverage_pct": 85.0,
+      "min_seasons": 5,
+      "min_samples": 10000,
+      "min_samples_per_class": 100,
+      "min_test_samples_per_class": 20,
+      "max_calibration_ece": 0.1,
+      "max_brier_score": 0.2
     }
   },
   "training_coverage": {
-    "seasons_count": 1,
+    "seasons_count": 12,
     "seasons_list": [
-      2024
+      2014,
+      2015,
+      2016,
+      2017,
+      2018,
+      2019,
+      2020,
+      2021,
+      2022,
+      2023,
+      2024,
+      2025
     ],
-    "blocks_count": 2,
-    "samples_generated": 96,
+    "blocks_count": 2156,
+    "samples_generated": 230592,
     "class_distribution": {
-      "0": 66,
-      "1": 4,
-      "2": 22,
-      "3": 4
+      "0": 154927,
+      "1": 12048,
+      "2": 49157,
+      "3": 14460
     },
-    "gru_sequences_count": 48,
-    "gru_status": "DISABLED_INSUFFICIENT_TRAINING_DATA (samples=48, required=100)",
-    "gru_enabled": false
+    "gru_sequences_count": 57648,
+    "gru_status": "TRAINED",
+    "gru_enabled": true
   },
   "architecture": {
     "stage_1": "AnalogEnsemble (Euclidean on ONI/DMI/MJO) + SmallGRU sequence model",
@@ -90,85 +116,86 @@
   ],
   "calibration_version": "v1-time-respecting",
   "validation_metrics": {
-    "sample_count": 20,
-    "brier_score_multi": 0.324,
+    "sample_count": 576,
+    "brier_score_multi": 0.1274,
     "brier_scores_per_class": {
-      "brier_active": 0.5357,
-      "brier_onset": 0.0006,
-      "brier_break": 0.7314,
-      "brier_heavy": 0.0281
+      "brier_active": 0.2199,
+      "brier_onset": 0.0682,
+      "brier_break": 0.1448,
+      "brier_heavy": 0.0767
     },
-    "log_loss": 3.3626,
-    "expected_calibration_error": 0.6231,
+    "log_loss": 0.9755,
+    "expected_calibration_error": 0.0605,
     "reliability_curve": [
       {
+        "bin_mid": 0.45,
+        "accuracy": 0.5161,
+        "confidence": 0.4842,
+        "count": 31
+      },
+      {
         "bin_mid": 0.55,
-        "accuracy": 1.0,
-        "confidence": 0.5842,
-        "count": 1
+        "accuracy": 0.5932,
+        "confidence": 0.5538,
+        "count": 118
       },
       {
         "bin_mid": 0.65,
-        "accuracy": 0.0,
-        "confidence": 0.655,
-        "count": 3
+        "accuracy": 0.7143,
+        "confidence": 0.6391,
+        "count": 119
       },
       {
         "bin_mid": 0.75,
-        "accuracy": 0.0,
-        "confidence": 0.7626,
-        "count": 1
+        "accuracy": 0.6945,
+        "confidence": 0.7584,
+        "count": 275
       },
       {
         "bin_mid": 0.85,
-        "accuracy": 0.2857,
-        "confidence": 0.8564,
-        "count": 7
-      },
-      {
-        "bin_mid": 0.95,
-        "accuracy": 0.25,
-        "confidence": 0.9155,
-        "count": 8
+        "accuracy": 0.7273,
+        "confidence": 0.8087,
+        "count": 33
       }
     ],
-    "roc_auc_macro": null,
+    "roc_auc_macro": 0.7124,
     "roc_auc_per_class": {
-
-      "auc_active": 0.56,
-      "auc_break": 0.4267
+      "auc_active": 0.6284,
+      "auc_onset": 0.8613,
+      "auc_break": 0.7388,
+      "auc_heavy": 0.621
     },
     "confusion_matrix": [
       [
-        5,
+        315,
+        0,
+        53,
+        0
+      ],
+      [
+        43,
         0,
         0,
         0
       ],
       [
+        45,
         0,
-        0,
-        0,
+        71,
         0
       ],
       [
-        15,
+        45,
         0,
-        0,
-        0
-      ],
-      [
-        0,
-        0,
-        0,
+        4,
         0
       ]
     ],
     "per_class_performance": {
       "active": {
-        "precision": 0.25,
-        "recall": 1.0,
-        "f1_score": 0.4
+        "precision": 0.7031,
+        "recall": 0.856,
+        "f1_score": 0.7721
       },
       "onset": {
         "precision": 0.0,
@@ -176,9 +203,9 @@
         "f1_score": 0.0
       },
       "break": {
-        "precision": 0.0,
-        "recall": 0.0,
-        "f1_score": 0.0
+        "precision": 0.5547,
+        "recall": 0.6121,
+        "f1_score": 0.582
       },
       "heavy": {
         "precision": 0.0,
@@ -186,27 +213,6 @@
         "f1_score": 0.0
       }
     },
-    "lead_time_performance": {
-      "week_1": {
-        "brier_score": 0.2439,
-        "accuracy": 0.4,
-        "samples": 5
-      },
-      "week_2": {
-        "brier_score": 0.3749,
-        "accuracy": 0.2,
-        "samples": 5
-      },
-      "week_3": {
-        "brier_score": 0.3477,
-        "accuracy": 0.2,
-        "samples": 5
-      },
-      "week_4": {
-        "brier_score": 0.3293,
-        "accuracy": 0.2,
-        "samples": 5
-      }
-    }
+    "lead_time_performance": {}
   }
 }
